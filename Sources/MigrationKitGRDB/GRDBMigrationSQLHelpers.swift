@@ -11,17 +11,18 @@ public enum GRDBMigrationSQLHelpers {
     }
 
     public static func dropIndexIfExists(_ indexName: String, in db: Database) throws {
-        let exists = try Bool.fetchOne(
-            db,
-            sql: """
-            SELECT EXISTS(
-                SELECT 1
-                FROM sqlite_master
-                WHERE type = 'index' AND name = ?
-            )
-            """,
-            arguments: [indexName]
-        ) ?? false
+        let exists =
+            try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM sqlite_master
+                        WHERE type = 'index' AND name = ?
+                    )
+                    """,
+                arguments: [indexName]
+            ) ?? false
 
         guard exists else { return }
         try db.execute(sql: "DROP INDEX \(quoted(indexName))")

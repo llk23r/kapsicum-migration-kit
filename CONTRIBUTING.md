@@ -29,9 +29,19 @@ The script validates the semver format, ensures a clean working tree, runs build
 
 Update `CHANGELOG.md` before tagging.
 
+## Formatting
+
+Source files are formatted with `swift-format` using the config in `.swift-format`. CI checks this on every PR.
+
+To format locally:
+
+```bash
+swift format --in-place --recursive Sources/ Tests/
+```
+
 ## Conventions
 
-- **Swift language mode:** v6 (strict concurrency).
-- **Testing framework:** Swift Testing (`@Test`, `#expect()`), not XCTest.
-- **Versioning:** [Semantic Versioning](https://semver.org). Tags use `v` prefix.
-- **Migration identifiers:** Lexicographically ordered, `NNNN_snake_case` convention.
+- Swift language mode v6 (strict concurrency).
+- Swift Testing (`@Test`, `#expect()`), not XCTest.
+- [Semantic Versioning](https://semver.org). Tags use `v` prefix.
+- Migration identifiers: lexicographically ordered, `NNNN_snake_case`.

@@ -28,7 +28,8 @@ public enum MigrationKitError: LocalizedError, Equatable {
         case .rollbackStepCountMustBeNonNegative(let count):
             return "Rollback step count must be >= 0 (received \(count))"
         case .rollbackMustTargetLatestApplied(let latestApplied, let requested):
-            return "Can only rollback the latest applied migration. Latest is '\(latestApplied)', requested '\(requested)'."
+            return
+                "Can only rollback the latest applied migration. Latest is '\(latestApplied)', requested '\(requested)'."
         }
     }
 }

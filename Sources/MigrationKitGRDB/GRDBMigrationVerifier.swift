@@ -49,17 +49,18 @@ public enum GRDBMigrationVerifier {
         for required in requiredIndexes {
             guard try db.tableExists(required.table) else { continue }
 
-            let indexExists = try Bool.fetchOne(
-                db,
-                sql: """
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM sqlite_master
-                    WHERE type = 'index' AND tbl_name = ? AND name = ?
-                )
-                """,
-                arguments: [required.table, required.index]
-            ) ?? false
+            let indexExists =
+                try Bool.fetchOne(
+                    db,
+                    sql: """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM sqlite_master
+                            WHERE type = 'index' AND tbl_name = ? AND name = ?
+                        )
+                        """,
+                    arguments: [required.table, required.index]
+                ) ?? false
 
             guard indexExists else {
                 throw GRDBMigrationVerificationError.missingIndex(

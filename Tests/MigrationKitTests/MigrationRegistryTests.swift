@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import MigrationKit
 
 final class MigrationRegistryTests: XCTestCase {

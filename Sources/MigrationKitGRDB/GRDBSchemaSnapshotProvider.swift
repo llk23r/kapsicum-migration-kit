@@ -24,20 +24,20 @@ public struct GRDBSchemaSnapshotProvider: SchemaSnapshotProvider {
             let statements = try String.fetchAll(
                 db,
                 sql: """
-                SELECT sql
-                FROM sqlite_master
-                WHERE sql IS NOT NULL
-                  AND name NOT LIKE 'sqlite_%'
-                ORDER BY
-                  CASE type
-                    WHEN 'table' THEN 0
-                    WHEN 'index' THEN 1
-                    WHEN 'trigger' THEN 2
-                    WHEN 'view' THEN 3
-                    ELSE 4
-                  END,
-                  name
-                """
+                    SELECT sql
+                    FROM sqlite_master
+                    WHERE sql IS NOT NULL
+                      AND name NOT LIKE 'sqlite_%'
+                    ORDER BY
+                      CASE type
+                        WHEN 'table' THEN 0
+                        WHEN 'index' THEN 1
+                        WHEN 'trigger' THEN 2
+                        WHEN 'view' THEN 3
+                        ELSE 4
+                      END,
+                      name
+                    """
             )
 
             let canonicalStatements = statements.map(Self.normalizeSQLStatement)

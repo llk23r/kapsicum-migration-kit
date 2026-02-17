@@ -1,5 +1,6 @@
-import XCTest
 import GRDB
+import XCTest
+
 @testable import MigrationKit
 @testable import MigrationKitGRDB
 
