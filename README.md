@@ -1,54 +1,36 @@
 # MigrationKit
-A lightweight Swift Package for deterministic, versioned data migrations that can be reused across apps and services.
+Reusable migration toolkit for Swift apps with optional GRDB and CLI layers.
 
-## Why this package exists
-- Keep migration logic decoupled from app repositories (like Kapsicum) for reuse.
-- Enforce semantic-versioned migration steps.
-- Provide predictable migration execution for partial upgrades and rollback-safe planning.
-
-## Installation (Swift Package Manager)
-In your `Package.swift`:
+## Installation
 ```swift
-.package(url: "https://github.com/llk23r/kapsicum-migration-kit.git", from: "0.1.1")
+.package(url: "https://github.com/llk23r/kapsicum-migration-kit.git", from: "0.2.0")
 ```
 
-Then add the product dependency:
-```swift
-.product(name: "MigrationKit", package: "kapsicum-migration-kit")
-```
+Available products:
+- `MigrationKit` (core types/registry/errors)
+- `MigrationKitGRDB` (GRDB-backed migration runner/helpers/verifier)
+- `MigrationKitCLI` (ArgumentParser-based CLI host/commands)
+- `migrationkit-cli` (executable shell wrapper)
 
-## Quick start
+## Example
 ```swift
 import MigrationKit
+import MigrationKitGRDB
 
-let runner = try MigrationRunner<[String: Int]>(steps: [
-    .init(id: "seed", version: "1.0.0") { state in
-        state["count"] = 1
-    },
-    .init(id: "bump", version: "1.1.0") { state in
-        state["count", default: 0] += 1
-    }
-])
+let steps: [MigrationStep<Database>] = [
+    .init(
+        identifier: "0001_create_items",
+        sourceFile: "M0001_CreateItems.swift",
+        apply: { db in
+            try db.create(table: "items") { t in
+                t.column("id", .integer).primaryKey()
+            }
+        }
+    )
+]
 
-let report = try runner.migrate([:], from: "0.0.0", to: "1.1.0")
-print(report.state)          // ["count": 2]
-print(report.appliedStepIDs) // ["seed", "bump"]
+let runner = try GRDBMigrationRunner(steps: steps)
 ```
 
-## Versioning and tags
-- This repo follows Semantic Versioning.
-- Git tags are prefixed with `v` (for example: `v0.1.0`).
-- Consumers should depend on tags/releases for deterministic integration.
-
-## Release process
-1. Update `CHANGELOG.md`.
-2. Run local checks:
-   - `swift build --build-tests`
-   - `swift test`
-3. Create and push a tag:
-   - `scripts/release.sh vX.Y.Z`
-4. GitHub Actions validates the tag and publishes a GitHub Release.
-
-## CI
-- Pull requests and pushes to `main` run build + tests.
-- Tag pushes (`v*`) run release validation and release publication.
+## Versioning
+Semantic Versioning with `v` tags.
