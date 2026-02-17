@@ -9,7 +9,7 @@ A lightweight Swift Package for deterministic, versioned data migrations that ca
 ## Installation (Swift Package Manager)
 In your `Package.swift`:
 ```swift
-.package(url: "https://github.com/llk23r/kapsicum-migration-kit.git", from: "0.1.0")
+.package(url: "https://github.com/llk23r/kapsicum-migration-kit.git", from: "0.1.1")
 ```
 
 Then add the product dependency:

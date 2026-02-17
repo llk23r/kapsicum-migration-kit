@@ -1,6 +1,6 @@
 # Contributing
 ## Setup
-1. Install Swift 6.2+.
+1. Install Swift 6.1+.
 2. Clone the repository.
 3. Run:
    - `swift build --build-tests`
