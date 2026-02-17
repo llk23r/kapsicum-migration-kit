@@ -28,6 +28,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/mezhevikin/GRDB.SQLCipher.swift.git", branch: "master"),
+        .package(url: "https://github.com/sqlcipher/SQLCipher.swift.git", exact: "4.11.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.6.0"),
     ],
     targets: [
