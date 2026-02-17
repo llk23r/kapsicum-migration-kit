@@ -23,19 +23,19 @@ public struct MigrationDatabaseOpenOptions: Equatable, Sendable {
     }
 }
 
-public struct MigrationCLIHost {
+public struct MigrationCLIHost: Sendable {
     public let runner: GRDBMigrationRunner
-    public let openWriter: (_ options: MigrationDatabaseOpenOptions) throws -> any DatabaseWriter
-    public let generateSchemaSnapshot: (() throws -> String)?
+    public let openWriter: @Sendable (_ options: MigrationDatabaseOpenOptions) throws -> any DatabaseWriter
+    public let schemaSnapshotProvider: (any SchemaSnapshotProvider<String>)?
 
     public init(
         runner: GRDBMigrationRunner,
-        openWriter: @escaping (_ options: MigrationDatabaseOpenOptions) throws -> any DatabaseWriter,
-        generateSchemaSnapshot: (() throws -> String)? = nil
+        openWriter: @escaping @Sendable (_ options: MigrationDatabaseOpenOptions) throws -> any DatabaseWriter,
+        schemaSnapshotProvider: (any SchemaSnapshotProvider<String>)? = nil
     ) {
         self.runner = runner
         self.openWriter = openWriter
-        self.generateSchemaSnapshot = generateSchemaSnapshot
+        self.schemaSnapshotProvider = schemaSnapshotProvider
     }
 }
 
@@ -57,64 +57,65 @@ public enum MigrationCLI {
     public static func run(
         arguments: [String],
         host: MigrationCLIHost,
-        output: @escaping (String) -> Void = { print($0) },
-        errorOutput: @escaping (String) -> Void = { message in
+        output: @escaping @Sendable (String) -> Void = { print($0) },
+        errorOutput: @escaping @Sendable (String) -> Void = { message in
             FileHandle.standardError.write(Data((message + "\n").utf8))
         }
     ) throws {
-        MigrationCLIContext.install(
-            host: host,
-            output: output,
-            errorOutput: errorOutput
-        )
-        defer { MigrationCLIContext.reset() }
+        try MigrationCLIContext.$current.withValue(
+            .init(
+                host: host,
+                output: output,
+                errorOutput: errorOutput
+            )
+        ) {
+            let normalizedArguments: [String]
+            if arguments.first == MigrationRootCommand.configuration.commandName {
+                normalizedArguments = Array(arguments.dropFirst())
+            } else {
+                normalizedArguments = arguments
+            }
 
-        var command = try MigrationRootCommand.parseAsRoot(arguments)
-        try command.run()
+            var command = try MigrationRootCommand.parseAsRoot(normalizedArguments)
+            try command.run()
+        }
     }
+}
+
+private struct MigrationCLIContextValues: Sendable {
+    let host: MigrationCLIHost
+    let output: @Sendable (String) -> Void
+    let errorOutput: @Sendable (String) -> Void
 }
 
 private enum MigrationCLIContext {
-    nonisolated(unsafe) static var host: MigrationCLIHost?
-    nonisolated(unsafe) static var output: ((String) -> Void)?
-    nonisolated(unsafe) static var errorOutput: ((String) -> Void)?
-
-    static func install(
-        host: MigrationCLIHost,
-        output: @escaping (String) -> Void,
-        errorOutput: @escaping (String) -> Void
-    ) {
-        self.host = host
-        self.output = output
-        self.errorOutput = errorOutput
-    }
-
-    static func reset() {
-        host = nil
-        output = nil
-        errorOutput = nil
-    }
+    @TaskLocal static var current: MigrationCLIContextValues?
 
     static func requireHost() throws -> MigrationCLIHost {
-        guard let host else {
+        guard let current else {
             throw MigrationCLIError.hostUnavailable
         }
-        return host
+        return current.host
     }
 
     static func write(_ line: String) {
-        output?(line)
+        current?.output(line)
     }
 }
 
-private protocol UsesDatabaseOpenOptions {
-    var dbPath: String? { get }
-    var password: String? { get }
-    var keychainService: String? { get }
-    var keychainAccount: String? { get }
-}
+private struct MigrationDatabaseCommandOptions: ParsableArguments, Sendable {
+    @Option(name: .long, help: "Database path override")
+    var dbPath: String?
 
-private extension UsesDatabaseOpenOptions {
+    @Option(name: .long, help: "Database password override")
+    var password: String?
+
+    @Option(name: .long, help: "Keychain service for password lookup")
+    var keychainService: String?
+
+    @Option(name: .long, help: "Keychain account for password lookup")
+    var keychainAccount: String?
+
     var openOptions: MigrationDatabaseOpenOptions {
         MigrationDatabaseOpenOptions(
             dbPath: dbPath,
@@ -139,7 +140,7 @@ private struct MigrationRootCommand: ParsableCommand {
     )
 }
 
-private struct MigrateCommand: ParsableCommand, UsesDatabaseOpenOptions {
+private struct MigrateCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "migrate",
         abstract: "Run pending migrations, optionally up to a specific identifier"
@@ -148,21 +149,12 @@ private struct MigrateCommand: ParsableCommand, UsesDatabaseOpenOptions {
     @Option(name: .long, help: "Target migration identifier (like VERSION)")
     var to: String?
 
-    @Option(name: .long, help: "Database path override")
-    var dbPath: String?
-
-    @Option(name: .long, help: "Database password override")
-    var password: String?
-
-    @Option(name: .long, help: "Keychain service for password lookup")
-    var keychainService: String?
-
-    @Option(name: .long, help: "Keychain account for password lookup")
-    var keychainAccount: String?
+    @OptionGroup
+    var databaseOptions: MigrationDatabaseCommandOptions
 
     mutating func run() throws {
         let host = try MigrationCLIContext.requireHost()
-        let writer = try host.openWriter(openOptions)
+        let writer = try host.openWriter(databaseOptions.openOptions)
 
         if let to {
             try host.runner.migrate(in: writer, upTo: to)
@@ -184,27 +176,18 @@ private struct MigrateCommand: ParsableCommand, UsesDatabaseOpenOptions {
     }
 }
 
-private struct StatusCommand: ParsableCommand, UsesDatabaseOpenOptions {
+private struct StatusCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "status",
         abstract: "Show up/down status for all registered migrations"
     )
 
-    @Option(name: .long, help: "Database path override")
-    var dbPath: String?
-
-    @Option(name: .long, help: "Database password override")
-    var password: String?
-
-    @Option(name: .long, help: "Keychain service for password lookup")
-    var keychainService: String?
-
-    @Option(name: .long, help: "Keychain account for password lookup")
-    var keychainAccount: String?
+    @OptionGroup
+    var databaseOptions: MigrationDatabaseCommandOptions
 
     mutating func run() throws {
         let host = try MigrationCLIContext.requireHost()
-        let writer = try host.openWriter(openOptions)
+        let writer = try host.openWriter(databaseOptions.openOptions)
         let statuses = try host.runner.migrationStatus(in: writer)
 
         MigrationCLIContext.write("STATUS  MIGRATION                             SOURCE")
@@ -226,7 +209,7 @@ private struct StatusCommand: ParsableCommand, UsesDatabaseOpenOptions {
     }
 }
 
-private struct RollbackCommand: ParsableCommand, UsesDatabaseOpenOptions {
+private struct RollbackCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "rollback",
         abstract: "Rollback migration steps (newest-first)"
@@ -235,47 +218,29 @@ private struct RollbackCommand: ParsableCommand, UsesDatabaseOpenOptions {
     @Option(name: .long, help: "Number of migrations to rollback")
     var step: Int = 1
 
-    @Option(name: .long, help: "Database path override")
-    var dbPath: String?
-
-    @Option(name: .long, help: "Database password override")
-    var password: String?
-
-    @Option(name: .long, help: "Keychain service for password lookup")
-    var keychainService: String?
-
-    @Option(name: .long, help: "Keychain account for password lookup")
-    var keychainAccount: String?
+    @OptionGroup
+    var databaseOptions: MigrationDatabaseCommandOptions
 
     mutating func run() throws {
         let host = try MigrationCLIContext.requireHost()
-        let writer = try host.openWriter(openOptions)
+        let writer = try host.openWriter(databaseOptions.openOptions)
         try host.runner.rollbackMigrations(in: writer, steps: step)
         MigrationCLIContext.write("↩️ Rolled back \(step) migration step(s)")
     }
 }
 
-private struct VerifyCommand: ParsableCommand, UsesDatabaseOpenOptions {
+private struct VerifyCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "verify",
         abstract: "Run post-migration verification checks"
     )
 
-    @Option(name: .long, help: "Database path override")
-    var dbPath: String?
-
-    @Option(name: .long, help: "Database password override")
-    var password: String?
-
-    @Option(name: .long, help: "Keychain service for password lookup")
-    var keychainService: String?
-
-    @Option(name: .long, help: "Keychain account for password lookup")
-    var keychainAccount: String?
+    @OptionGroup
+    var databaseOptions: MigrationDatabaseCommandOptions
 
     mutating func run() throws {
         let host = try MigrationCLIContext.requireHost()
-        let writer = try host.openWriter(openOptions)
+        let writer = try host.openWriter(databaseOptions.openOptions)
         try host.runner.runPostMigrationChecks(in: writer)
         MigrationCLIContext.write("✅ Database verification passed")
     }
@@ -292,11 +257,10 @@ private struct SchemaDumpCommand: ParsableCommand {
 
     mutating func run() throws {
         let host = try MigrationCLIContext.requireHost()
-        guard let generateSchemaSnapshot = host.generateSchemaSnapshot else {
+        guard let schemaSnapshotProvider = host.schemaSnapshotProvider else {
             throw MigrationCLIError.schemaSnapshotNotConfigured
         }
-
-        let sql = try generateSchemaSnapshot()
+        let sql = try schemaSnapshotProvider.generateCanonicalSnapshot()
         let outputURL = URL(fileURLWithPath: output)
         try sql.write(to: outputURL, atomically: true, encoding: .utf8)
         MigrationCLIContext.write("✅ Schema snapshot written to \(outputURL.path)")

@@ -4,13 +4,12 @@ import MigrationKit
 
 public struct GRDBSchemaSnapshotProvider: SchemaSnapshotProvider {
     public typealias Snapshot = String
-
-    private let migrate: (DatabaseQueue) throws -> Void
-    private let postProcess: (String) -> String
+    private let migrate: @Sendable (DatabaseQueue) throws -> Void
+    private let postProcess: @Sendable (String) -> String
 
     public init(
-        migrate: @escaping (DatabaseQueue) throws -> Void,
-        postProcess: @escaping (String) -> String = { $0 }
+        migrate: @escaping @Sendable (DatabaseQueue) throws -> Void,
+        postProcess: @escaping @Sendable (String) -> String = { $0 }
     ) {
         self.migrate = migrate
         self.postProcess = postProcess

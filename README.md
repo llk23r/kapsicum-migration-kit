@@ -113,10 +113,19 @@ Wire `MigrationCLI` into your executable to get ActiveRecord-style commands:
 ```swift
 let host = MigrationCLIHost(
     runner: runner,
-    openWriter: { options in try openDatabase(options) }
+    openWriter: { options in try openDatabase(options) },
+    schemaSnapshotProvider: GRDBSchemaSnapshotProvider(
+        migrate: { queue in
+            try runner.migrate(in: queue)
+        }
+    )
 )
 try MigrationCLI.run(arguments: CommandLine.arguments, host: host)
 ```
+
+`MigrationCLI.run(arguments:host:)` accepts either:
+- `["migrationkit", "status", ...]`
+- `["status", ...]`
 
 | Command | What it does |
 |---------|-------------|
@@ -124,7 +133,7 @@ try MigrationCLI.run(arguments: CommandLine.arguments, host: host)
 | `status` | Print up/down for every registered migration |
 | `rollback` | Undo the last N steps (`--step N`) |
 | `verify` | Run integrity checks without migrating |
-| `schema-dump` | Write canonical schema SQL to a file |
+| `schema-dump` | Write canonical schema SQL to a file (requires `schemaSnapshotProvider`) |
 
 ## API Overview
 

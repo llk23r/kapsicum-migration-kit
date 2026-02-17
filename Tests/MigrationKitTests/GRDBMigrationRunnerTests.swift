@@ -1,6 +1,5 @@
 import GRDB
 import XCTest
-
 @testable import MigrationKit
 @testable import MigrationKitGRDB
 
@@ -49,8 +48,95 @@ final class GRDBMigrationRunnerTests: XCTestCase {
         }
     }
 
-    private func makeRunner() throws -> GRDBMigrationRunner {
+    func testBootstrapSchemaRunsOncePerMigrationInvocation() throws {
+        let integration = MigrationHostIntegration<any DatabaseWriter, Database>(
+            bootstrapSchema: { db in
+                try db.execute(
+                    sql: "CREATE TABLE IF NOT EXISTS bootstrap_calls (id INTEGER PRIMARY KEY AUTOINCREMENT)"
+                )
+                try db.execute(sql: "INSERT INTO bootstrap_calls DEFAULT VALUES")
+                return false
+            }
+        )
+        let runner = try makeRunner(integration: integration)
+        let queue = try DatabaseQueue()
+
+        try runner.migrate(in: queue)
+
+        let bootstrapCallCount = try queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM bootstrap_calls") ?? 0
+        }
+        XCTAssertEqual(bootstrapCallCount, 1)
+    }
+
+    func testRollbackMigrationsRejectsNegativeStepCount() throws {
+        let runner = try makeRunner()
+        let queue = try DatabaseQueue()
+
+        XCTAssertThrowsError(try runner.rollbackMigrations(in: queue, steps: -1)) { error in
+            guard case MigrationKitError.rollbackStepCountMustBeNonNegative(let count) = error else {
+                return XCTFail("Expected rollbackStepCountMustBeNonNegative, got \(error)")
+            }
+            XCTAssertEqual(count, -1)
+        }
+    }
+
+    func testRollbackMigrationRequiresLatestAppliedMigration() throws {
+        let runner = try makeRunner()
+        let queue = try DatabaseQueue()
+        try runner.migrate(in: queue)
+
+        XCTAssertThrowsError(
+            try runner.rollbackMigration(identifier: "0001_create_items", in: queue)
+        ) { error in
+            guard
+                case MigrationKitError.rollbackMustTargetLatestApplied(
+                    let latestApplied,
+                    let requested
+                ) = error
+            else {
+                return XCTFail("Expected rollbackMustTargetLatestApplied, got \(error)")
+            }
+            XCTAssertEqual(latestApplied, "0002_create_tags")
+            XCTAssertEqual(requested, "0001_create_items")
+        }
+    }
+
+    func testRollbackMigrationWithoutRollbackDefinitionThrows() throws {
         let steps: [MigrationStep<Database>] = [
+            MigrationStep(
+                identifier: "0001_create_items",
+                sourceFile: "M0001_CreateItems.swift",
+                apply: { db in
+                    try db.create(table: "items", ifNotExists: true) { table in
+                        table.column("id", .integer).primaryKey()
+                    }
+                }
+            )
+        ]
+        let runner = try GRDBMigrationRunner(steps: steps)
+        let queue = try DatabaseQueue()
+
+        try runner.migrate(in: queue)
+
+        XCTAssertThrowsError(
+            try runner.rollbackMigration(identifier: "0001_create_items", in: queue)
+        ) { error in
+            guard case MigrationKitError.rollbackNotDefined(let identifier) = error else {
+                return XCTFail("Expected rollbackNotDefined, got \(error)")
+            }
+            XCTAssertEqual(identifier, "0001_create_items")
+        }
+    }
+
+    private func makeRunner(
+        integration: MigrationHostIntegration<any DatabaseWriter, Database> = .init()
+    ) throws -> GRDBMigrationRunner {
+        try GRDBMigrationRunner(steps: makeSteps(), integration: integration)
+    }
+
+    private func makeSteps() -> [MigrationStep<Database>] {
+        [
             MigrationStep(
                 identifier: "0001_create_items",
                 sourceFile: "M0001_CreateItems.swift",
@@ -79,7 +165,5 @@ final class GRDBMigrationRunnerTests: XCTestCase {
                 }
             ),
         ]
-
-        return try GRDBMigrationRunner(steps: steps)
     }
 }

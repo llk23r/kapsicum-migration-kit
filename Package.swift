@@ -58,6 +58,7 @@ let package = Package(
             dependencies: [
                 "MigrationKit",
                 "MigrationKitGRDB",
+                "MigrationKitCLI",
                 .product(name: "GRDB", package: "GRDB.SQLCipher.swift"),
             ]
         ),

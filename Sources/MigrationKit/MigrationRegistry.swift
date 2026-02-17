@@ -1,4 +1,4 @@
-public struct MigrationRegistry<Database> {
+public struct MigrationRegistry<Database>: Sendable {
     public let steps: [MigrationStep<Database>]
 
     public init(

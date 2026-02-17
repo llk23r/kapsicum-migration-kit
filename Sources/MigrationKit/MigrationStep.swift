@@ -15,17 +15,17 @@ public struct MigrationStatus: Equatable, Sendable {
     }
 }
 
-public struct MigrationStep<Database>: @unchecked Sendable {
+public struct MigrationStep<Database>: Sendable {
     public let identifier: String
     public let sourceFile: String
-    public let apply: (Database) throws -> Void
-    public let rollback: ((Database) throws -> Void)?
+    public let apply: @Sendable (Database) throws -> Void
+    public let rollback: (@Sendable (Database) throws -> Void)?
 
     public init(
         identifier: String,
         sourceFile: String,
-        apply: @escaping (Database) throws -> Void,
-        rollback: ((Database) throws -> Void)? = nil
+        apply: @escaping @Sendable (Database) throws -> Void,
+        rollback: (@Sendable (Database) throws -> Void)? = nil
     ) {
         self.identifier = identifier
         self.sourceFile = sourceFile

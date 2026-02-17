@@ -2,18 +2,18 @@ import Foundation
 import GRDB
 import MigrationKit
 
-public struct GRDBMigrationRunner: @unchecked Sendable {
+public struct GRDBMigrationRunner: Sendable {
     public typealias Step = MigrationStep<Database>
 
     private let registry: MigrationRegistry<Database>
     private let integration: MigrationHostIntegration<any DatabaseWriter, Database>
-    private let log: ((String) -> Void)?
+    private let log: (@Sendable (String) -> Void)?
 
     public init(
         steps: [Step],
         enforceLexicographicOrder: Bool = true,
         integration: MigrationHostIntegration<any DatabaseWriter, Database> = .init(),
-        log: ((String) -> Void)? = nil
+        log: (@Sendable (String) -> Void)? = nil
     ) throws {
         self.registry = try MigrationRegistry(
             steps: steps,
@@ -36,6 +36,7 @@ public struct GRDBMigrationRunner: @unchecked Sendable {
     }
 
     public func migrate(in writer: any DatabaseWriter) throws {
+        try runBootstrapSchemaIfConfigured(in: writer)
         let migrator = buildMigrator()
         try migrator.migrate(writer)
         try runPostMigrationChecks(in: writer)
@@ -46,6 +47,7 @@ public struct GRDBMigrationRunner: @unchecked Sendable {
         guard migrationIdentifiers.contains(targetIdentifier) else {
             throw MigrationKitError.unknownMigrationTarget(targetIdentifier)
         }
+        try runBootstrapSchemaIfConfigured(in: writer)
 
         let migrator = buildMigrator()
         try migrator.migrate(writer, upTo: targetIdentifier)
@@ -174,18 +176,25 @@ public struct GRDBMigrationRunner: @unchecked Sendable {
 
         for step in registry.steps {
             migrator.registerMigration(step.identifier) { db in
-                if let bootstrapSchema = integration.bootstrapSchema {
-                    let didCreateBaseSchema = try bootstrapSchema(db)
-                    if didCreateBaseSchema {
-                        log?("🧱 Base schema created during migration \(step.identifier)")
-                    }
-                }
                 log?("🧱 Applying migration \(step.identifier) from \(step.sourceFile)")
                 try step.apply(db)
             }
         }
 
         return migrator
+    }
+
+    private func runBootstrapSchemaIfConfigured(in writer: any DatabaseWriter) throws {
+        guard let bootstrapSchema = integration.bootstrapSchema else {
+            return
+        }
+
+        try writer.write { db in
+            let didCreateBaseSchema = try bootstrapSchema(db)
+            if didCreateBaseSchema {
+                log?("🧱 Base schema created before migrations")
+            }
+        }
     }
 
     private func runIntegrityCheck(in db: Database) throws {
