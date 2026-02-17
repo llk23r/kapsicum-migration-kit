@@ -12,19 +12,10 @@ concurrency:
 
 jobs:
   build-and-test:
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Swift
-        if: runner.os == 'Linux'
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.1"
 
       - name: Swift version
         run: swift --version
@@ -36,16 +27,10 @@ jobs:
         run: swift test
 
   format:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.1"
-
       - name: Check formatting
-        run: |
-          swift format lint --strict --recursive Sources/ Tests/
+        run: swift format lint --strict --recursive Sources/ Tests/
