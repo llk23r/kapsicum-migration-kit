@@ -102,9 +102,13 @@ try runner.migrate(in: writer)
 let statuses = try runner.migrationStatus(in: writer)
 let pending = try runner.pendingMigrationIdentifiers(in: writer)
 
-// Undo the last applied migration
-try runner.rollbackLastMigration(in: writer)
+// See what reversing everything after 0001 would take away, then do it in one transaction
+let report = try runner.rollbackReport(.to("0001_create_users"), in: writer)
+try runner.rollback(.to("0001_create_users"), in: writer, expecting: report.identifiers)
 ```
+
+A rollback closure must only change the database: `rollbackReport` runs it in a savepoint that is
+then undone, as SQLite undoes any rollback that fails.
 
 ## CLI
 
@@ -131,7 +135,7 @@ try MigrationCLI.run(arguments: CommandLine.arguments, host: host)
 |---------|-------------|
 | `migrate` | Apply pending migrations, optionally `--to <identifier>` |
 | `status` | Print up/down for every registered migration |
-| `rollback` | Undo the last N steps (`--step N`) |
+| `rollback` | Reverse the last N steps (`--step N`) or every step after one (`--to <identifier>`) in one transaction; prints what goes first, `--dry-run` stops there |
 | `verify` | Run integrity checks without migrating |
 | `schema-dump` | Write canonical schema SQL to a file (requires `schemaSnapshotProvider`) |
 
@@ -143,7 +147,8 @@ Core (`MigrationKit`):
 |------|-------------|
 | `MigrationStep<Database>` | Holds an identifier, source file, apply closure, and optional rollback closure |
 | `MigrationRegistry<Database>` | Validates ordering and uniqueness; exposes the manifest and rollback-capable identifiers |
-| `MigrationHostIntegration` | Optional hooks for schema bootstrap, integrity checks, and post-migration verification |
+| `MigrationHostIntegration` | Optional hooks for schema bootstrap, integrity checks, post-migration verification, and bookkeeping inside a rollback's transaction |
+| `RollbackTarget` / `RollbackReport` | Which applied steps a rollback reverses; the tables and columns it takes away, with their counts |
 | `SchemaSnapshotProvider` | Protocol for generating a canonical schema snapshot |
 
 GRDB (`MigrationKitGRDB`):
@@ -160,6 +165,8 @@ Errors:
 | `MigrationKitError.duplicateIdentifiers` | Two steps share the same identifier |
 | `MigrationKitError.identifiersOutOfOrder` | Steps aren't in lexicographic order |
 | `MigrationKitError.rollbackNotDefined` | Rollback requested on a step that doesn't have one |
+| `MigrationKitError.rollbackBlockedByUnknownMigrations` | A migration this build doesn't know was applied after the steps to reverse |
+| `MigrationKitError.rollbackPlanChanged` | The steps a rollback would reverse are no longer the ones `expecting:` names |
 | `GRDBMigrationVerificationError.quickCheckFailed` | SQLite integrity check fails |
 | `GRDBMigrationVerificationError.foreignKeyViolations` | Foreign key violations found |
 

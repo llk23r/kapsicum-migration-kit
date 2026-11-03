@@ -185,16 +185,17 @@ The `buildMigrator()` method in `GRDBMigrationRunner` (`Sources/MigrationKitGRDB
 
 Forward migration adds structure. Rollback removes it. But MigrationKit only allows rolling back the *most recently applied* migration. You cannot skip ahead and undo step 3 while step 4 is still applied; that would leave the database in an impossible state.
 
-When you call `runner.rollbackLastMigration(in: writer)`, the runner:
+When you call `runner.rollback(.steps(2), in: writer)` (or `.to("0001_...")`, or `rollbackLastMigration`), the runner opens one write transaction and, inside it:
 
 1. Reads `grdb_migrations` to find which identifiers are applied.
-2. Finds the latest applied identifier by walking the registry's list in reverse and picking the first match.
-3. Checks that the step has a `rollback` closure. If it does not, it throws `rollbackNotDefined`.
-4. Runs the rollback closure inside a write transaction.
-5. Deletes that identifier's row from `grdb_migrations`.
-6. Runs verification.
+2. Chooses the steps to reverse, newest first, from the registry's order.
+3. Refuses, before running any of them, if one has no `rollback` closure (`rollbackNotDefined`), or if an identifier this registry does not know was applied after the oldest of them (`rollbackBlockedByUnknownMigrations`): a newer build's migration may depend on what they would remove. Unknown identifiers that sort earlier are another branch's history and do not refuse.
+4. Runs each rollback closure and deletes its identifier from `grdb_migrations`.
+5. Runs the host's `didRollback`, if any.
 
-You can also rollback multiple steps at once with `rollbackMigrations(in:steps:)`. It simply repeats the single-step rollback N times, rechecking the latest applied identifier each time.
+Then it commits, and runs verification once. If anything throws, SQLite undoes the whole transaction: every step stays applied. GRDB's schema cache only learns of schema changes as they run, never of a `ROLLBACK`, so the runner clears it on failure.
+
+`runner.rollbackReport(_:in:)` answers what a rollback would take away without taking it: it runs the same steps in a savepoint, compares the tables and columns before and after, undoes the savepoint, and counts the rows and non-NULL values of what would go. A rollback closure must therefore only change the database. That is already what a failed rollback assumes.
 
 This is why rollback closures are optional. Not every migration is safely reversible. Dropping a column destroys data; you cannot un-drop it. MigrationKit makes you opt in to rollback per step, and throws a clear error if someone tries to roll back a step that never declared how.
 
@@ -205,6 +206,7 @@ This is why rollback closures are optional. Not every migration is safely revers
 | No rollback closure | Step was defined without one | `rollbackNotDefined("0002_...")` |
 | Wrong target | Trying to rollback a step that is not the latest applied | `rollbackMustTargetLatestApplied(latestApplied:requested:)` |
 | Negative step count | Passing a negative number to `rollbackMigrations` | `rollbackStepCountMustBeNonNegative` |
+| Newer unknown migration | An identifier this build does not know was applied after the steps to reverse | `rollbackBlockedByUnknownMigrations([...])` |
 
 **Vocabulary Introduced:**
 
@@ -288,7 +290,7 @@ The CLI exposes five commands:
 |---------|-------------|---------------------|
 | `migrate` | Apply pending steps (optionally up to a target) | `migrate(in:)` or `migrate(in:upTo:)` |
 | `status` | Print up/down for every registered step | `migrationStatus(in:)` |
-| `rollback` | Undo the last N steps | `rollbackMigrations(in:steps:)` |
+| `rollback` | Print what goes, then reverse the last N steps (`--step`) or every step after one (`--to`); `--dry-run` only prints | `rollbackReport(_:in:)`, host's `prepareRollback`, then `rollback(_:in:)` |
 | `verify` | Run post-migration checks without migrating | `runPostMigrationChecks(in:)` |
 | `schema-dump` | Write canonical schema SQL to a file | host's `generateSchemaSnapshot` closure |
 

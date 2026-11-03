@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 This project follows Semantic Versioning.
 
 ## [Unreleased]
+### Added
+- `rollback(_:in:)` with `RollbackTarget.steps(_:)` and `.to(_:)`: every step reverses in one transaction.
+- `rollbackReport(_:in:)`: the tables and columns a rollback takes away, with their row and value
+  counts, measured in a savepoint that is undone.
+- `MigrationHostIntegration.didRollback`, which runs inside the rollback's transaction.
+- CLI `rollback --to <identifier>` and `--dry-run`; the command prints what goes before it changes
+  anything, and `MigrationCLIHost.prepareRollback` runs between the two.
+- CLI argument errors carry ArgumentParser's message and usage (`MigrationCLIError.invalidArguments`)
+  instead of `ArgumentParser.CommandError error 1`, and `--help` prints usage instead of failing.
+- `MigrationKitError.rollbackBlockedByUnknownMigrations`, thrown when this build would reverse
+  migrations that a newer, unknown migration was applied after. Unknown identifiers are placed by
+  string order only when the registry enforces lexicographic order; otherwise any one refuses.
+- `rollback(_:in:expecting:)` and `MigrationKitError.rollbackPlanChanged`: the CLI passes the
+  identifiers it reported, so a rollback another writer changed since is refused, not run.
+
+### Changed
+- `rollbackLastMigration`, `rollbackMigrations(in:steps:)` and `rollbackMigration(identifier:in:)`
+  run through the same transaction: a failing step now leaves every step applied, instead of the
+  ones before it reversed. Their steps are chosen and checked inside it, before any runs.
+- Post-rollback verification runs once per rollback (the host's `verifyPostMigration`, or the
+  integrity check without one), as after `migrate`, instead of an integrity check plus the host's
+  checks after every step.
+- A failed rollback clears the connection's GRDB schema cache, which does not learn of `ROLLBACK`.
+
 ## [0.2.0] - 2026-02-17
 ### Added
 - Ported full multi-product migration toolkit from Kapsicum local package.
