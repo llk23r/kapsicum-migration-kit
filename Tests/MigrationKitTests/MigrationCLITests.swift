@@ -217,6 +217,31 @@ final class MigrationCLITests: XCTestCase {
         XCTAssertEqual(try runner.migrationStatus(in: queue).map(\.state), [.up, .up])
     }
 
+    func testRollbackRefusesWhenTheDatabaseChangesWhileTheHostPrepares() throws {
+        let runner = try makeRunner()
+        let queue = try DatabaseQueue()
+        try runner.migrate(in: queue)
+        let writerBox = DatabaseWriterBox(writer: queue)
+        let host = MigrationCLIHost(
+            runner: runner,
+            openWriter: { _ in writerBox.writer },
+            prepareRollback: { writer, _ in
+                try runner.rollback(.steps(1), in: writer)  // another caller reverses tags meanwhile
+                return []
+            }
+        )
+
+        XCTAssertThrowsError(
+            try MigrationCLI.run(arguments: ["migrationkit", "rollback"], host: host, output: { _ in })
+        ) { error in
+            XCTAssertEqual(
+                error as? MigrationKitError,
+                .rollbackPlanChanged(expected: ["0002_create_tags"], actual: ["0001_create_items"])
+            )
+        }
+        XCTAssertEqual(try runner.migrationStatus(in: queue).map(\.state), [.up, .down], "items was never reported")
+    }
+
     func testRollbackWithNothingAppliedSaysSoAndDoesNotPrepare() throws {
         let runner = try makeRunner()
         let writerBox = DatabaseWriterBox(writer: try DatabaseQueue())

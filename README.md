@@ -104,7 +104,7 @@ let pending = try runner.pendingMigrationIdentifiers(in: writer)
 
 // See what reversing everything after 0001 would take away, then do it in one transaction
 let report = try runner.rollbackReport(.to("0001_create_users"), in: writer)
-try runner.rollback(.to("0001_create_users"), in: writer)
+try runner.rollback(.to("0001_create_users"), in: writer, expecting: report.identifiers)
 ```
 
 A rollback closure must only change the database: `rollbackReport` runs it in a savepoint that is
@@ -166,6 +166,7 @@ Errors:
 | `MigrationKitError.identifiersOutOfOrder` | Steps aren't in lexicographic order |
 | `MigrationKitError.rollbackNotDefined` | Rollback requested on a step that doesn't have one |
 | `MigrationKitError.rollbackBlockedByUnknownMigrations` | A migration this build doesn't know was applied after the steps to reverse |
+| `MigrationKitError.rollbackPlanChanged` | The steps a rollback would reverse are no longer the ones `expecting:` names |
 | `GRDBMigrationVerificationError.quickCheckFailed` | SQLite integrity check fails |
 | `GRDBMigrationVerificationError.foreignKeyViolations` | Foreign key violations found |
 

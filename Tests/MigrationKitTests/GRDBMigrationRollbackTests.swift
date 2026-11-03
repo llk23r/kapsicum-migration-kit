@@ -105,6 +105,48 @@ final class GRDBMigrationRollbackTests: XCTestCase {
         XCTAssertEqual(try runner.migrationStatus(in: queue).map(\.state), [.up, .up, .down])
     }
 
+    func testWithoutEnforcedOrderAnyUnknownMigrationRefuses() throws {
+        // Sorted today, but nothing promises the next build's identifiers sort after "0002_b".
+        let steps: [MigrationStep<Database>] = [
+            MigrationStep(
+                identifier: "0002_b",
+                sourceFile: "M0002.swift",
+                apply: { db in try db.execute(sql: "CREATE TABLE b (id INTEGER PRIMARY KEY)") },
+                rollback: { db in try db.execute(sql: "DROP TABLE b") }
+            )
+        ]
+        let runner = try GRDBMigrationRunner(steps: steps, enforceLexicographicOrder: false)
+        let queue = try DatabaseQueue()
+        try runner.migrate(in: queue)
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO grdb_migrations (identifier) VALUES ('0001_a_from_a_newer_build')")
+        }
+
+        XCTAssertThrowsError(try runner.rollback(.steps(1), in: queue)) { error in
+            XCTAssertEqual(
+                error as? MigrationKitError,
+                .rollbackBlockedByUnknownMigrations(["0001_a_from_a_newer_build"])
+            )
+        }
+        XCTAssertTrue(try queue.read { try $0.tableExists("b") })
+    }
+
+    func testARollbackThatNoLongerMatchesWhatWasMeasuredRefuses() throws {
+        let runner = try makeRunner()
+        let queue = try DatabaseQueue()
+        try runner.migrate(in: queue)
+        let report = try runner.rollbackReport(.steps(1), in: queue)
+        try runner.rollback(.steps(1), in: queue)  // another caller, between measuring and rolling back
+
+        XCTAssertThrowsError(try runner.rollback(.steps(1), in: queue, expecting: report.identifiers)) { error in
+            XCTAssertEqual(
+                error as? MigrationKitError,
+                .rollbackPlanChanged(expected: ["0003_create_tags"], actual: ["0002_add_item_note"])
+            )
+        }
+        XCTAssertEqual(try runner.migrationStatus(in: queue).map(\.state), [.up, .up, .down])
+    }
+
     func testReportCountsWhatGoesAndChangesNothing() throws {
         let runner = try makeRunner()
         let queue = try DatabaseQueue()

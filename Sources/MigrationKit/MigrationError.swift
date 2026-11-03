@@ -9,6 +9,7 @@ public enum MigrationKitError: LocalizedError, Equatable {
     case rollbackStepCountMustBeNonNegative(Int)
     case rollbackMustTargetLatestApplied(latestApplied: String, requested: String)
     case rollbackBlockedByUnknownMigrations([String])
+    case rollbackPlanChanged(expected: [String], actual: [String])
 
     public var errorDescription: String? {
         switch self {
@@ -35,6 +36,11 @@ public enum MigrationKitError: LocalizedError, Equatable {
             return """
                 The database has migrations this build does not know, applied after the ones to roll back: \
                 \(identifiers.joined(separator: ", ")). Roll those back first with the build that applied them.
+                """
+        case .rollbackPlanChanged(let expected, let actual):
+            return """
+                The database changed since the rollback was measured: it would now reverse \
+                [\(actual.joined(separator: ", "))], not [\(expected.joined(separator: ", "))]. Nothing was rolled back.
                 """
         }
     }

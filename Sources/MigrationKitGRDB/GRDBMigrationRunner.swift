@@ -8,8 +8,9 @@ public struct GRDBMigrationRunner: Sendable {
     private let registry: MigrationRegistry<Database>
     private let integration: MigrationHostIntegration<any DatabaseWriter, Database>
     private let log: (@Sendable (String) -> Void)?
-    /// Whether identifiers sort in registration order, which lets an unknown applied identifier be
-    /// placed before or after a registered one.
+    /// Whether the registry enforces lexicographic order: the only promise that a later build's
+    /// identifiers sort after this one's, which places an unknown applied identifier. A registry
+    /// that merely happens to be sorted promises nothing about the next build's.
     private let identifiersSortInOrder: Bool
 
     public init(
@@ -24,7 +25,7 @@ public struct GRDBMigrationRunner: Sendable {
         )
         self.integration = integration
         self.log = log
-        self.identifiersSortInOrder = registry.identifiers == registry.identifiers.sorted()
+        self.identifiersSortInOrder = enforceLexicographicOrder
     }
 
     public var migrationIdentifiers: [String] {
@@ -118,10 +119,22 @@ public struct GRDBMigrationRunner: Sendable {
     ///
     /// The steps are chosen and checked inside that transaction, before any of them runs. A step
     /// with no rollback, or a migration this build does not know applied after the ones to
-    /// reverse, refuses the whole rollback. Returns the reversed identifiers, newest first.
+    /// reverse, refuses the whole rollback. So does a choice other than `expected`, the
+    /// identifiers a `rollbackReport` showed, when another writer reversed or applied migrations
+    /// since. Returns the reversed identifiers, newest first.
     @discardableResult
-    public func rollback(_ target: RollbackTarget, in writer: any DatabaseWriter) throws -> [String] {
-        try reverse(in: writer) { applied in try plan(target, applied: applied) }
+    public func rollback(
+        _ target: RollbackTarget,
+        in writer: any DatabaseWriter,
+        expecting expected: [String]? = nil
+    ) throws -> [String] {
+        try reverse(in: writer) { applied in
+            let steps = try plan(target, applied: applied)
+            if let expected, steps.map(\.identifier) != expected {
+                throw MigrationKitError.rollbackPlanChanged(expected: expected, actual: steps.map(\.identifier))
+            }
+            return steps
+        }
     }
 
     /// Measures what `rollback(target, in:)` would take away, and changes nothing.

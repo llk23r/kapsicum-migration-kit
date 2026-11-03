@@ -256,7 +256,7 @@ private struct RollbackCommand: ParsableCommand {
         }
 
         try host.prepareRollback?(writer, report).forEach(MigrationCLIContext.write)
-        let reversed = try host.runner.rollback(target, in: writer)
+        let reversed = try host.runner.rollback(target, in: writer, expecting: report.identifiers)
         MigrationCLIContext.write("↩️ Rolled back \(reversed.count) migration(s)")
     }
 }

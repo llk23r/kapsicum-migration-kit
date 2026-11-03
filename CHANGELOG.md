@@ -12,7 +12,10 @@ This project follows Semantic Versioning.
 - CLI `rollback --to <identifier>` and `--dry-run`; the command prints what goes before it changes
   anything, and `MigrationCLIHost.prepareRollback` runs between the two.
 - `MigrationKitError.rollbackBlockedByUnknownMigrations`, thrown when this build would reverse
-  migrations that a newer, unknown migration was applied after.
+  migrations that a newer, unknown migration was applied after. Unknown identifiers are placed by
+  string order only when the registry enforces lexicographic order; otherwise any one refuses.
+- `rollback(_:in:expecting:)` and `MigrationKitError.rollbackPlanChanged`: the CLI passes the
+  identifiers it reported, so a rollback another writer changed since is refused, not run.
 
 ### Changed
 - `rollbackLastMigration`, `rollbackMigrations(in:steps:)` and `rollbackMigration(identifier:in:)`
