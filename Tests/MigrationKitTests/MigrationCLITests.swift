@@ -140,6 +140,115 @@ final class MigrationCLITests: XCTestCase {
         }
     }
 
+    func testRollbackSaysWhatGoesLetsTheHostPrepareAndThenReverses() throws {
+        let runner = try makeRunner()
+        let queue = try DatabaseQueue()
+        try runner.migrate(in: queue)
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO items (id, name) VALUES (1, 'a')")
+            try db.execute(sql: "INSERT INTO tags (id, item_id, label) VALUES (1, 1, 'x'), (2, 1, 'y')")
+        }
+        let writerBox = DatabaseWriterBox(writer: queue)
+        let output = LineRecorder()
+        let host = MigrationCLIHost(
+            runner: runner,
+            openWriter: { _ in writerBox.writer },
+            prepareRollback: { writer, report in
+                let tagsStillThere = try writer.read { try $0.tableExists("tags") }
+                output.append("prepare saw tags=\(tagsStillThere) for \(report.identifiers)")
+                return ["📦 host kept a copy"]
+            }
+        )
+
+        try MigrationCLI.run(
+            arguments: ["migrationkit", "rollback", "--to", "0001_create_items"],
+            host: host,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(
+            output.snapshot(),
+            [
+                "↩️ Reverses, newest first:",
+                "  - 0002_create_tags",
+                "⚠️ Takes away, with what each holds:",
+                "  - table tags (2 rows)",
+                "prepare saw tags=true for [\"0002_create_tags\"]",
+                "📦 host kept a copy",
+                "↩️ Rolled back 1 migration(s)",
+            ]
+        )
+        XCTAssertFalse(try queue.read { try $0.tableExists("tags") })
+    }
+
+    func testDryRunSaysWhatWouldGoAndChangesNothing() throws {
+        let runner = try makeRunner()
+        let queue = try DatabaseQueue()
+        try runner.migrate(in: queue)
+        let writerBox = DatabaseWriterBox(writer: queue)
+        let output = LineRecorder()
+        let host = MigrationCLIHost(
+            runner: runner,
+            openWriter: { _ in writerBox.writer },
+            prepareRollback: { _, _ in
+                output.append("prepare ran")
+                return []
+            }
+        )
+
+        try MigrationCLI.run(
+            arguments: ["migrationkit", "rollback", "--step", "2", "--dry-run"],
+            host: host,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(
+            output.snapshot(),
+            [
+                "↩️ Reverses, newest first:",
+                "  - 0002_create_tags",
+                "  - 0001_create_items",
+                "⚠️ Takes away, with what each holds:",
+                "  - table items (0 rows)",
+                "  - table tags (0 rows)",
+                "ℹ️ Dry run: the database is unchanged",
+            ]
+        )
+        XCTAssertEqual(try runner.migrationStatus(in: queue).map(\.state), [.up, .up])
+    }
+
+    func testRollbackWithNothingAppliedSaysSoAndDoesNotPrepare() throws {
+        let runner = try makeRunner()
+        let writerBox = DatabaseWriterBox(writer: try DatabaseQueue())
+        let output = LineRecorder()
+        let host = MigrationCLIHost(
+            runner: runner,
+            openWriter: { _ in writerBox.writer },
+            prepareRollback: { _, _ in
+                output.append("prepare ran")
+                return []
+            }
+        )
+
+        try MigrationCLI.run(arguments: ["migrationkit", "rollback"], host: host, output: { output.append($0) })
+
+        XCTAssertEqual(output.snapshot(), ["ℹ️ Nothing to roll back"])
+    }
+
+    func testRollbackTakesStepOrToButNotBoth() throws {
+        let writerBox = DatabaseWriterBox(writer: try DatabaseQueue())
+        let host = MigrationCLIHost(runner: try makeRunner(), openWriter: { _ in writerBox.writer })
+
+        XCTAssertThrowsError(
+            try MigrationCLI.run(
+                arguments: ["migrationkit", "rollback", "--step", "1", "--to", "0001_create_items"],
+                host: host
+            )
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Pass --step or --to, not both."), "\(error)")
+        }
+    }
+
     private func makeRunner() throws -> GRDBMigrationRunner {
         let steps: [MigrationStep<Database>] = [
             MigrationStep(

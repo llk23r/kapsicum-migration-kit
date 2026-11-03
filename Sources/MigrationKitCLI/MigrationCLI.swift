@@ -27,15 +27,21 @@ public struct MigrationCLIHost: Sendable {
     public let runner: GRDBMigrationRunner
     public let openWriter: @Sendable (_ options: MigrationDatabaseOpenOptions) throws -> any DatabaseWriter
     public let schemaSnapshotProvider: (any SchemaSnapshotProvider<String>)?
+    /// Runs once a rollback is measured and before it changes the database, with what it will
+    /// take away; the lines it returns are printed. A host keeps its copy of the database here,
+    /// and a throw stops the rollback.
+    public let prepareRollback: (@Sendable (_ writer: any DatabaseWriter, _ report: RollbackReport) throws -> [String])?
 
     public init(
         runner: GRDBMigrationRunner,
         openWriter: @escaping @Sendable (_ options: MigrationDatabaseOpenOptions) throws -> any DatabaseWriter,
-        schemaSnapshotProvider: (any SchemaSnapshotProvider<String>)? = nil
+        schemaSnapshotProvider: (any SchemaSnapshotProvider<String>)? = nil,
+        prepareRollback: (@Sendable (_ writer: any DatabaseWriter, _ report: RollbackReport) throws -> [String])? = nil
     ) {
         self.runner = runner
         self.openWriter = openWriter
         self.schemaSnapshotProvider = schemaSnapshotProvider
+        self.prepareRollback = prepareRollback
     }
 }
 
@@ -212,20 +218,59 @@ private struct StatusCommand: ParsableCommand {
 private struct RollbackCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "rollback",
-        abstract: "Rollback migration steps (newest-first)"
+        abstract: "Reverse applied migrations, newest first, in one transaction"
     )
 
-    @Option(name: .long, help: "Number of migrations to rollback")
-    var step: Int = 1
+    @Option(name: .long, help: "Number of migrations to roll back (default 1)")
+    var step: Int?
+
+    @Option(name: .long, help: "Roll back every migration applied after this identifier, which stays applied")
+    var to: String?
+
+    @Flag(name: .long, help: "Show what the rollback would take away, and change nothing")
+    var dryRun = false
 
     @OptionGroup
     var databaseOptions: MigrationDatabaseCommandOptions
 
+    func validate() throws {
+        if step != nil, to != nil {
+            throw ValidationError("Pass --step or --to, not both.")
+        }
+    }
+
     mutating func run() throws {
         let host = try MigrationCLIContext.requireHost()
         let writer = try host.openWriter(databaseOptions.openOptions)
-        try host.runner.rollbackMigrations(in: writer, steps: step)
-        MigrationCLIContext.write("↩️ Rolled back \(step) migration step(s)")
+        let target = to.map(RollbackTarget.to) ?? .steps(step ?? 1)
+
+        let report = try host.runner.rollbackReport(target, in: writer)
+        guard !report.identifiers.isEmpty else {
+            MigrationCLIContext.write("ℹ️ Nothing to roll back")
+            return
+        }
+        report.descriptionLines.forEach(MigrationCLIContext.write)
+        if dryRun {
+            MigrationCLIContext.write("ℹ️ Dry run: the database is unchanged")
+            return
+        }
+
+        try host.prepareRollback?(writer, report).forEach(MigrationCLIContext.write)
+        let reversed = try host.runner.rollback(target, in: writer)
+        MigrationCLIContext.write("↩️ Rolled back \(reversed.count) migration(s)")
+    }
+}
+
+extension RollbackReport {
+    fileprivate var descriptionLines: [String] {
+        var lines = ["↩️ Reverses, newest first:"] + identifiers.map { "  - \($0)" }
+        guard !removedTables.isEmpty || !removedColumns.isEmpty else {
+            return lines + ["ℹ️ Takes away no table or column"]
+        }
+        lines.append("⚠️ Takes away, with what each holds:")
+        lines += removedTables.map { "  - table \($0.name) (\($0.rowCount) rows)" }
+        lines += removedColumns.map { "  - column \($0.table).\($0.column) (\($0.valueCount) values)" }
+        return lines
     }
 }
 

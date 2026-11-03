@@ -8,6 +8,7 @@ public enum MigrationKitError: LocalizedError, Equatable {
     case rollbackNotDefined(String)
     case rollbackStepCountMustBeNonNegative(Int)
     case rollbackMustTargetLatestApplied(latestApplied: String, requested: String)
+    case rollbackBlockedByUnknownMigrations([String])
 
     public var errorDescription: String? {
         switch self {
@@ -30,6 +31,11 @@ public enum MigrationKitError: LocalizedError, Equatable {
         case .rollbackMustTargetLatestApplied(let latestApplied, let requested):
             return
                 "Can only rollback the latest applied migration. Latest is '\(latestApplied)', requested '\(requested)'."
+        case .rollbackBlockedByUnknownMigrations(let identifiers):
+            return """
+                The database has migrations this build does not know, applied after the ones to roll back: \
+                \(identifiers.joined(separator: ", ")). Roll those back first with the build that applied them.
+                """
         }
     }
 }
