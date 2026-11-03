@@ -11,6 +11,8 @@ This project follows Semantic Versioning.
 - `MigrationHostIntegration.didRollback`, which runs inside the rollback's transaction.
 - CLI `rollback --to <identifier>` and `--dry-run`; the command prints what goes before it changes
   anything, and `MigrationCLIHost.prepareRollback` runs between the two.
+- CLI argument errors carry ArgumentParser's message and usage (`MigrationCLIError.invalidArguments`)
+  instead of `ArgumentParser.CommandError error 1`, and `--help` prints usage instead of failing.
 - `MigrationKitError.rollbackBlockedByUnknownMigrations`, thrown when this build would reverse
   migrations that a newer, unknown migration was applied after. Unknown identifiers are placed by
   string order only when the registry enforces lexicographic order; otherwise any one refuses.

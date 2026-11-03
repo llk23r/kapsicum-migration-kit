@@ -48,9 +48,14 @@ public struct MigrationCLIHost: Sendable {
 public enum MigrationCLIError: LocalizedError {
     case hostUnavailable
     case schemaSnapshotNotConfigured
+    /// ArgumentParser's own message and usage: its errors are not `LocalizedError`s, so a host that
+    /// prints `localizedDescription` would otherwise show only "ArgumentParser.CommandError error 1".
+    case invalidArguments(String)
 
     public var errorDescription: String? {
         switch self {
+        case .invalidArguments(let message):
+            return message
         case .hostUnavailable:
             return "Migration CLI host is not installed"
         case .schemaSnapshotNotConfigured:
@@ -82,8 +87,23 @@ public enum MigrationCLI {
                 normalizedArguments = arguments
             }
 
-            var command = try MigrationRootCommand.parseAsRoot(normalizedArguments)
-            try command.run()
+            var command: any ParsableCommand
+            do {
+                command = try MigrationRootCommand.parseAsRoot(normalizedArguments)
+            } catch {
+                guard MigrationRootCommand.exitCode(for: error).isSuccess else {
+                    throw MigrationCLIError.invalidArguments(MigrationRootCommand.fullMessage(for: error))
+                }
+                output(MigrationRootCommand.fullMessage(for: error))
+                return
+            }
+            do {
+                try command.run()
+            } catch let error where MigrationRootCommand.exitCode(for: error).isSuccess {
+                // `--help` parses as a help command whose run throws a request that exits
+                // successfully; every command's own failure keeps its error.
+                output(MigrationRootCommand.fullMessage(for: error))
+            }
         }
     }
 }
@@ -268,9 +288,13 @@ extension RollbackReport {
             return lines + ["ℹ️ Takes away no table or column"]
         }
         lines.append("⚠️ Takes away, with what each holds:")
-        lines += removedTables.map { "  - table \($0.name) (\($0.rowCount) rows)" }
-        lines += removedColumns.map { "  - column \($0.table).\($0.column) (\($0.valueCount) values)" }
+        lines += removedTables.map { "  - table \($0.name) (\(counted($0.rowCount, "row")))" }
+        lines += removedColumns.map { "  - column \($0.table).\($0.column) (\(counted($0.valueCount, "value")))" }
         return lines
+    }
+
+    private func counted(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
     }
 }
 

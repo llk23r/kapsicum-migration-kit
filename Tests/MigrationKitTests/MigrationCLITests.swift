@@ -185,6 +185,7 @@ final class MigrationCLITests: XCTestCase {
         let runner = try makeRunner()
         let queue = try DatabaseQueue()
         try runner.migrate(in: queue)
+        try queue.write { db in try db.execute(sql: "INSERT INTO items (id, name) VALUES (1, 'a')") }
         let writerBox = DatabaseWriterBox(writer: queue)
         let output = LineRecorder()
         let host = MigrationCLIHost(
@@ -209,7 +210,7 @@ final class MigrationCLITests: XCTestCase {
                 "  - 0002_create_tags",
                 "  - 0001_create_items",
                 "⚠️ Takes away, with what each holds:",
-                "  - table items (0 rows)",
+                "  - table items (1 row)",
                 "  - table tags (0 rows)",
                 "ℹ️ Dry run: the database is unchanged",
             ]
@@ -270,8 +271,24 @@ final class MigrationCLITests: XCTestCase {
                 host: host
             )
         ) { error in
-            XCTAssertTrue(String(describing: error).contains("Pass --step or --to, not both."), "\(error)")
+            // What a host that prints `localizedDescription` shows, as Kapsicum's does.
+            XCTAssertTrue(error.localizedDescription.contains("Pass --step or --to, not both."), "\(error)")
+            XCTAssertTrue(error.localizedDescription.contains("Usage:"), error.localizedDescription)
         }
+    }
+
+    func testHelpPrintsUsageInsteadOfFailing() throws {
+        let writerBox = DatabaseWriterBox(writer: try DatabaseQueue())
+        let host = MigrationCLIHost(runner: try makeRunner(), openWriter: { _ in writerBox.writer })
+        let output = LineRecorder()
+
+        try MigrationCLI.run(
+            arguments: ["migrationkit", "rollback", "--help"],
+            host: host,
+            output: { output.append($0) }
+        )
+
+        XCTAssertTrue(output.snapshot().joined().contains("--dry-run"), "\(output.snapshot())")
     }
 
     private func makeRunner() throws -> GRDBMigrationRunner {
