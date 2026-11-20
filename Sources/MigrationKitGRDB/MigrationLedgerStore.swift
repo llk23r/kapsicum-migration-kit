@@ -82,19 +82,28 @@ enum MigrationLedgerStore {
         }
     }
 
-    /// What `grdb_migrations` holds, with the revisions the ledger knows. Without a ledger every
-    /// revision is unknown; a ledger row for an identifier that is not applied is ignored.
-    static func state(in db: Database) throws -> LedgerState {
-        guard try db.tableExists("grdb_migrations") else { return LedgerState(applied: [], revisions: [:]) }
+    /// What `grdb_migrations` holds, with what the ledger knows of each applied identifier. Without
+    /// a ledger every revision and branch is unknown; a ledger row for an identifier that is not
+    /// applied is ignored.
+    static func applied(in db: Database) throws -> AppliedMigrations {
+        guard try db.tableExists("grdb_migrations") else { return AppliedMigrations(identifiers: []) }
         let applied = Set(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations"))
         var revisions: [String: Int] = [:]
+        var branches: [String: String] = [:]
         if try db.tableExists(table) {
-            let rows = try Row.fetchAll(db, sql: "SELECT identifier, revision FROM \(table) WHERE revision IS NOT NULL")
+            let rows = try Row.fetchAll(db, sql: "SELECT identifier, revision, applied_branch FROM \(table)")
             for row in rows {
                 let identifier: String = row["identifier"]
-                if applied.contains(identifier) { revisions[identifier] = row["revision"] }
+                guard applied.contains(identifier) else { continue }
+                if let revision: Int = row["revision"] { revisions[identifier] = revision }
+                if let branch: String = row["applied_branch"] { branches[identifier] = branch }
             }
         }
-        return LedgerState(applied: applied, revisions: revisions)
+        return AppliedMigrations(identifiers: applied, revisions: revisions, branches: branches)
+    }
+
+    static func state(in db: Database) throws -> LedgerState {
+        let applied = try applied(in: db)
+        return LedgerState(applied: applied.identifiers, revisions: applied.revisions)
     }
 }

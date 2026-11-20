@@ -32,6 +32,24 @@ public struct LedgerDiff: Equatable, Sendable {
     }
 }
 
+/// What a database records about its applied migrations, for a host to read without copying the
+/// ledger's tables: `grdb_migrations` (the source of truth) with what the ledger knows of each.
+public struct AppliedMigrations: Equatable, Sendable {
+    /// Every applied identifier.
+    public let identifiers: Set<String>
+    /// The revision each applied identifier ran at, where the ledger recorded one. An applied
+    /// identifier without an entry ran at an unknown revision.
+    public let revisions: [String: Int]
+    /// The branch of the build that applied each identifier, where the ledger recorded one.
+    public let branches: [String: String]
+
+    public init(identifiers: Set<String>, revisions: [String: Int] = [:], branches: [String: String] = [:]) {
+        self.identifiers = identifiers
+        self.revisions = revisions
+        self.branches = branches
+    }
+}
+
 /// What a database records: the applied identifiers, and the revision each ran at where known.
 package struct LedgerState: Sendable {
     package let applied: Set<String>

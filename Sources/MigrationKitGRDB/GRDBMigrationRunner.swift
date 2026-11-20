@@ -117,6 +117,18 @@ public struct GRDBMigrationRunner: Sendable {
         registry.diff(try MigrationLedgerStore.state(in: db), mainKnown: mainKnown)
     }
 
+    /// What the database records about its applied migrations: the identifiers, and the revision
+    /// and branch the ledger recorded for each where it did. Reads only; needs no registry.
+    public static func appliedMigrations(in reader: any DatabaseReader) throws -> AppliedMigrations {
+        try reader.read { db in try appliedMigrations(in: db) }
+    }
+
+    /// `appliedMigrations(in:)` on a connection the caller already holds, such as inside an open
+    /// write transaction. Reads only.
+    public static func appliedMigrations(in db: Database) throws -> AppliedMigrations {
+        try MigrationLedgerStore.applied(in: db)
+    }
+
     public func pendingMigrationIdentifiers(in writer: any DatabaseWriter) throws -> [String] {
         try migrationStatus(in: writer)
             .filter { $0.state == .down }
