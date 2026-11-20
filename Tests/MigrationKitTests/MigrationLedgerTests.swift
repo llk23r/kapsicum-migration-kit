@@ -185,6 +185,21 @@ final class MigrationLedgerTests: XCTestCase {
         )
     }
 
+    func testDiffInsideAnOpenWriteTransactionMatchesTheDiffThroughAReader() throws {
+        let queue = try DatabaseQueue()
+        try GRDBMigrationRunner(steps: [items, note()]).migrate(in: queue)
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO grdb_migrations (identifier) VALUES ('0004_from_a_branch')")
+        }
+        let edited = try GRDBMigrationRunner(steps: [items, note(revision: 2), tags])
+        let expected = LedgerDiff(behind: ["0003_tags"], ahead: ["0004_from_a_branch"], diverged: ["0002_note"])
+        XCTAssertEqual(try edited.diff(in: queue, mainKnown: []), expected)
+
+        let inside = try queue.write { db in try edited.diff(in: db, mainKnown: []) }
+
+        XCTAssertEqual(inside, expected)
+    }
+
     func testAnotherRevisionDivergesUnlessMainKnowsTheIdentifier() throws {
         let queue = try DatabaseQueue()
         try GRDBMigrationRunner(steps: [items, note(), tags]).migrate(in: queue)

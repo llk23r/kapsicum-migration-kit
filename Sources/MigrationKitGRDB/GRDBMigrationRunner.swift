@@ -108,8 +108,13 @@ public struct GRDBMigrationRunner: Sendable {
     /// `mainKnown` names the identifiers the host treats as released: their revisions are never
     /// compared. Reads only; an applied identifier without a ledger row counts as an unknown revision.
     public func diff(in reader: any DatabaseReader, mainKnown: Set<String>) throws -> LedgerDiff {
-        let ledger = try reader.read { db in try MigrationLedgerStore.state(in: db) }
-        return registry.diff(ledger, mainKnown: mainKnown)
+        try reader.read { db in try diff(in: db, mainKnown: mainKnown) }
+    }
+
+    /// `diff(in:mainKnown:)` on a connection the caller already holds, such as inside an open
+    /// write transaction (a `bootstrapSchema` hook), where a reader cannot be reentered. Reads only.
+    public func diff(in db: Database, mainKnown: Set<String>) throws -> LedgerDiff {
+        registry.diff(try MigrationLedgerStore.state(in: db), mainKnown: mainKnown)
     }
 
     public func pendingMigrationIdentifiers(in writer: any DatabaseWriter) throws -> [String] {
