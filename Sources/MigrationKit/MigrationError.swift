@@ -10,6 +10,7 @@ public enum MigrationKitError: LocalizedError, Equatable {
     case rollbackMustTargetLatestApplied(latestApplied: String, requested: String)
     case rollbackBlockedByUnknownMigrations([String])
     case rollbackPlanChanged(expected: [String], actual: [String])
+    case invalidSupersession(identifier: String, reference: String)
 
     public var errorDescription: String? {
         switch self {
@@ -41,6 +42,12 @@ public enum MigrationKitError: LocalizedError, Equatable {
             return """
                 The database changed since the rollback was measured: it would now reverse \
                 [\(actual.joined(separator: ", "))], not [\(expected.joined(separator: ", "))]. Nothing was rolled back.
+                """
+        case .invalidSupersession(let identifier, let reference):
+            return """
+                Migration '\(identifier)' cannot supersede '\(reference)'. A superseded migration is not registered, \
+                is named once in the whole registry, has no '@' in its identifier, and names the step itself only at \
+                another revision.
                 """
         }
     }
