@@ -25,6 +25,7 @@ try runner.migrate(in: writer)
 - [Products](#products)
 - [Quick Start](#quick-start)
 - [CLI](#cli)
+- [Ledger, revisions and squash on merge](#ledger-revisions-and-squash-on-merge)
 - [API Overview](#api-overview)
 - [How It Works](docs/HOW_IT_WORKS.md)
 - [Versioning](#versioning)
@@ -139,13 +140,122 @@ try MigrationCLI.run(arguments: CommandLine.arguments, host: host)
 | `verify` | Run integrity checks without migrating |
 | `schema-dump` | Write canonical schema SQL to a file (requires `schemaSnapshotProvider`) |
 
+## Ledger, revisions and squash on merge
+
+`grdb_migrations` says which identifiers ran. It cannot say *which definition* of an identifier
+ran, or which build ran it, and a database another branch migrated looks the same as one that
+belongs to a newer build. The runner keeps a ledger next to it:
+
+```sql
+CREATE TABLE archive_migration_ledger (
+  identifier TEXT PRIMARY KEY,
+  revision INTEGER,                 -- NULL: applied before the ledger, or by a build without it
+  applied_commit TEXT, applied_branch TEXT, applied_at REAL NOT NULL
+);
+```
+
+- **Written with each step.** Every step writes its row inside the transaction GRDB runs it in
+  (`inTransaction(.immediate)`, also under deferred foreign key checks), with its `revision` and
+  the `MigrationProvenance` the host passed the runner. A step that throws leaves no row.
+- **Deleted with each rollback**, in the rollback's own transaction.
+- **Reconciled** by `reconcileLedger(in:)`, which `migrate` also runs first: an applied identifier
+  without a row gets one with a NULL revision; a row whose identifier is not applied is removed.
+  `grdb_migrations` stays the source of truth.
+
+```swift
+let runner = try GRDBMigrationRunner(
+    steps: steps,
+    provenance: MigrationProvenance(commit: buildCommit, branch: buildBranch)
+)
+try runner.reconcileLedger(in: writer)   // when the database opens
+let diff = try runner.diff(in: writer, mainKnown: releasedIdentifiers)
+// diff.behind:   registered steps not applied
+// diff.ahead:    applied identifiers this build neither registers nor supersedes
+// diff.diverged: steps applied as another definition (see below)
+```
+
+### Revision
+
+`MigrationStep.revision` (default 1) names a step's definition. A step is frozen once it ran
+anywhere that matters: further changes go in a new migration. `diff` reports a step as
+**diverged** when the ledger recorded another revision for it, except for identifiers in
+`mainKnown` (released migrations are append-only and never compared) and for a NULL revision
+(unknown, never diverged; the host decides whether to ask).
+
+### Supersedes
+
+`MigrationStep.supersedes` lists the migrations a step replaces, as `MigrationReference`s:
+`"0065_add_refs"` matches that identifier at any revision, `"0091_x@1"` only at revision 1 (or at
+an unknown one). When **every** reference is applied:
+
+- the step counts as applied: `diff` does not list it as behind, `migrationStatus` shows it up,
+  and a rollback can reverse it;
+- the superseded identifiers are neither `ahead` nor unknown to `rollbackBlockedByUnknownMigrations`:
+  the registered step stands for them;
+- `migrate` does **not** run it. Before any step runs, in one transaction, it records the step: a
+  `grdb_migrations` row for its identifier (already there when the squash kept its name) and a
+  ledger row at its revision with the current provenance. The superseded rows stay, so a build
+  that still registers them sees them applied;
+- rolling the step back reverses its schema and removes its rows **and** the superseded ones, so
+  the next `migrate` runs it as on a fresh database.
+
+When only **some** references are applied, the database ran part of a chain the step cannot
+finish: `diff` lists the step as diverged (whatever `mainKnown` says) and `migrate` throws
+`supersededChainIncomplete` before changing anything. Roll the chain back with the build that
+applied it.
+
+The registry refuses a reference that names a registered step, a reference named twice, and a step
+naming itself other than at an earlier revision.
+
+Renumbering on merge is the simplest case: a branch ran `0065_add_refs`, main took `0065` first,
+and the branch's step lands as `0066_add_refs` with `supersedes: ["0065_add_refs"]`.
+
+### Squash on merge
+
+A branch that applied `0091_x` and then needed `0092_fix_x` merges **one** migration: `0091_x`
+rewritten to the final shape, at the next revision, superseding the chain.
+
+```swift
+MigrationStep(
+    identifier: "0091_x",
+    sourceFile: "M0091_X.swift",
+    revision: 2,
+    supersedes: ["0091_x@1", "0092_fix_x"],
+    apply: { db in /* the final shape, from the schema before 0091_x */ },
+    rollback: { db in /* undo the final shape */ }
+)
+```
+
+Databases that ran the chain count as current and have the step recorded at revision 2; fresh
+databases run the single step. Keep the chain's old definitions in your tests and prove the squash
+matches them:
+
+```swift
+let report = try SquashEquivalence.compare(
+    base: { db in /* the schema before the chain, e.g. migrate a queue up to 0090 */ },
+    chain: [m0091XRevision1, m0092FixX],
+    squashed: .m0091X,
+    fixture: { db in /* rows for a data-migrating step; row counts are then compared */ }
+)
+XCTAssertTrue(report.isEquivalent, report.description)
+```
+
+`compare` applies each side to its own in-memory database and compares tables, columns (type,
+`NOT NULL`, default, primary key, hidden), foreign keys, indexes (columns, order, collation,
+uniqueness, partial `WHERE`), triggers and views (normalized SQL), and with a fixture, row counts.
+It does not compare column order or `CHECK` constraints. A squash that does not match fails the
+test, never a database.
+
 ## API Overview
 
 Core (`MigrationKit`):
 
 | Type | What it does |
 |------|-------------|
-| `MigrationStep<Database>` | Holds an identifier, source file, apply closure, and optional rollback closure |
+| `MigrationStep<Database>` | Holds an identifier, source file, revision, superseded migrations, apply closure, and optional rollback closure |
+| `MigrationReference` | An identifier with an optional revision (`"0091_x"`, `"0091_x@1"`) |
+| `MigrationProvenance` | The commit and branch recorded with each ledger row |
+| `LedgerDiff` | Steps behind, identifiers ahead, steps diverged |
 | `MigrationRegistry<Database>` | Validates ordering and uniqueness; exposes the manifest and rollback-capable identifiers |
 | `MigrationHostIntegration` | Optional hooks for schema bootstrap, integrity checks, post-migration verification, and bookkeeping inside a rollback's transaction |
 | `RollbackTarget` / `RollbackReport` | Which applied steps a rollback reverses; the tables and columns it takes away, with their counts |
@@ -155,7 +265,8 @@ GRDB (`MigrationKitGRDB`):
 
 | Type | What it does |
 |------|-------------|
-| `GRDBMigrationRunner` | Migrate forward, roll back, query status and pending steps |
+| `GRDBMigrationRunner` | Migrate forward, roll back, query status and pending steps, reconcile and diff the ledger |
+| `SquashEquivalence` | Compares the schema a squashed step leaves with the chain it supersedes |
 | `GRDBMigrationVerifier` | SQLite `quick_check`, foreign key validation, required index checks |
 
 Errors:
@@ -167,6 +278,8 @@ Errors:
 | `MigrationKitError.rollbackNotDefined` | Rollback requested on a step that doesn't have one |
 | `MigrationKitError.rollbackBlockedByUnknownMigrations` | A migration this build doesn't know was applied after the steps to reverse |
 | `MigrationKitError.rollbackPlanChanged` | The steps a rollback would reverse are no longer the ones `expecting:` names |
+| `MigrationKitError.invalidSupersession` | A `supersedes` reference is registered, named twice, malformed, or names its own step at its own revision |
+| `MigrationKitError.supersededChainIncomplete` | The database applied only part of what a step supersedes |
 | `GRDBMigrationVerificationError.quickCheckFailed` | SQLite integrity check fails |
 | `GRDBMigrationVerificationError.foreignKeyViolations` | Foreign key violations found |
 
