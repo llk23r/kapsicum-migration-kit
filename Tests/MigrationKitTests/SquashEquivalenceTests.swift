@@ -23,11 +23,26 @@ final class SquashEquivalenceTests: XCTestCase {
             squashed: squashed(colorDefault: "'blue'")
         )
 
+        XCTAssertEqual(report.differences.count, 2, report.description)
+        XCTAssertEqual(
+            report.differences[0],
+            "column labels.color: the chain has TEXT NOT NULL DEFAULT 'red', "
+                + "the squashed step has TEXT NOT NULL DEFAULT 'blue'"
+        )
+        XCTAssertTrue(report.differences[1].hasPrefix("definition labels: the chain has"), report.description)
+    }
+
+    func testADroppedCheckConstraintIsReported() throws {
+        let report = try SquashEquivalence.compare(base: base, chain: chain, squashed: squashed(checksText: false))
+
         XCTAssertEqual(
             report.differences,
             [
-                "column labels.color: the chain has TEXT NOT NULL DEFAULT 'red', "
-                    + "the squashed step has TEXT NOT NULL DEFAULT 'blue'"
+                "definition labels: the chain has create table labels(color text not null default'red',"
+                    + "id integer primary key,item_id integer not null references items(id)on delete cascade,"
+                    + "text text check(length(text)>0)), the squashed step has create table labels("
+                    + "color text not null default'red',id integer primary key,item_id integer not null "
+                    + "references items(id)on delete cascade,text text)"
             ]
         )
     }
@@ -96,7 +111,7 @@ final class SquashEquivalenceTests: XCTestCase {
                             CREATE TABLE labels (
                                 id INTEGER PRIMARY KEY,
                                 item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-                                text TEXT
+                                text TEXT CHECK (length(text) > 0)
                             )
                             """
                     )
@@ -122,6 +137,7 @@ final class SquashEquivalenceTests: XCTestCase {
 
     private func squashed(
         colorDefault: String = "'red'",
+        checksText: Bool = true,
         index: Bool = true,
         triggerBody: String = "UPDATE items SET name = name WHERE id = NEW.item_id",
         seedsLabel: Bool = true
@@ -137,7 +153,7 @@ final class SquashEquivalenceTests: XCTestCase {
                         CREATE TABLE "labels" (
                             "id" INTEGER PRIMARY KEY,
                             "item_id" INTEGER NOT NULL REFERENCES "items"("id") ON DELETE CASCADE,
-                            "text" TEXT,
+                            "text" TEXT\(checksText ? " CHECK (length(\"text\") > 0)" : ""),
                             "color" TEXT NOT NULL DEFAULT \(colorDefault)
                         )
                         """

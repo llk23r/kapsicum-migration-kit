@@ -10,6 +10,8 @@ import MigrationKit
 ///
 /// - tables (virtual, `WITHOUT ROWID`, `STRICT`), and each column's type, `NOT NULL`, default,
 ///   primary key position and hidden flag (`PRAGMA table_xinfo`);
+/// - each table's `CREATE TABLE` text from `sqlite_schema`, normalized and with its column and
+///   constraint list sorted, which is where `CHECK` constraints and other clauses live;
 /// - foreign keys, with their actions;
 /// - indexes: key columns with order and collation, uniqueness, partial `WHERE`, and the whole
 ///   statement for an expression index; constraint indexes by their columns;
@@ -17,8 +19,9 @@ import MigrationKit
 ///   case outside string literals);
 /// - with a `fixture`, the row count of every table.
 ///
-/// Not compared: column order, and `CHECK` constraints and other table-level clauses that
-/// SQLite keeps only in the `CREATE TABLE` text. `grdb_migrations` and the ledger are ignored.
+/// Not compared: column order. `grdb_migrations` and the ledger are ignored. A table's text
+/// compares its column definitions as written (normalized), so `DEFAULT 1 NOT NULL` and
+/// `NOT NULL DEFAULT 1` differ there even though their columns match.
 public enum SquashEquivalence {
     public struct Report: Equatable, Sendable, CustomStringConvertible {
         /// One line per object that differs, sorted; empty when the schemas match.
@@ -116,9 +119,11 @@ private struct SchemaFacts {
 
     private mutating func describeTable(_ name: String, row: Row, in db: Database) throws {
         var description = "table"
+        let sql = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE name = ?", arguments: [name]) ?? ""
         if row["type"] as String == "virtual" {
-            let sql = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_schema WHERE name = ?", arguments: [name])
-            description = "virtual table \(SQLNormalizer.normalize(sql ?? ""))"
+            description = "virtual table \(SQLNormalizer.normalize(sql))"
+        } else {
+            facts["definition \(name)"] = SQLNormalizer.normalizeTable(sql)
         }
         if row["wr"] as Bool { description += " WITHOUT ROWID" }
         if row["strict"] as Bool { description += " STRICT" }
@@ -250,6 +255,44 @@ enum SQLNormalizer {
         }
         while output.last == ";" { output.removeLast() }
         return output
+    }
+
+    /// `normalize(sql)` for a `CREATE TABLE`, with its parenthesized list of columns and constraints
+    /// sorted, so that the order columns were added in does not count.
+    static func normalizeTable(_ sql: String) -> String {
+        var prefix = ""
+        var elements: [String] = []
+        var current = ""
+        var suffix = ""
+        var depth = 0
+        var quote: Character?
+        var characters = Array(normalize(sql))[...]
+        while let character = characters.popFirst() {
+            if let open = quote {
+                if character == open { quote = nil }
+            } else if character == "'" || character == "\"" {
+                quote = character
+            } else if character == "(" {
+                depth += 1
+                if depth == 1 {
+                    prefix.append(character)
+                    continue
+                }
+            } else if character == ")" {
+                depth -= 1
+                if depth == 0 {
+                    elements.append(current)
+                    suffix = ")" + String(characters)
+                    break
+                }
+            } else if character == ",", depth == 1 {
+                elements.append(current)
+                current = ""
+                continue
+            }
+            if depth == 0 { prefix.append(character) } else { current.append(character) }
+        }
+        return prefix + elements.sorted().joined(separator: ",") + suffix
     }
 
     /// The text up to the closing `quote`, where a doubled quote stands for one, kept as written.
