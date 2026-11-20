@@ -116,6 +116,51 @@ final class MigrationLedgerTests: XCTestCase {
         XCTAssertFalse(try queue.read { try $0.tableExists("grdb_migrations") })
     }
 
+    func testMigratingAnUpToDateDatabaseWritesNothing() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("archive.sqlite").path
+        let runner = try GRDBMigrationRunner(steps: [items, note(), tags])
+        let writer = try DatabaseQueue(path: path)
+        let observer = try DatabaseQueue(path: path)
+        try runner.migrate(in: writer)
+        let dataVersion = { try observer.read { try Int.fetchOne($0, sql: "PRAGMA data_version") } }
+        let versionBefore = try dataVersion()
+        let changesBefore = try writer.read { try Int.fetchOne($0, sql: "SELECT total_changes()") }
+
+        var statements: [String] = []
+        writer.inDatabase { db in db.trace { statements.append("\($0)") } }
+
+        try runner.migrate(in: writer)
+        try runner.reconcileLedger(in: writer)
+
+        writer.inDatabase { db in db.trace(nil) }
+        XCTAssertEqual(try dataVersion(), versionBefore, "another connection saw a commit")
+        XCTAssertEqual(try writer.read { try Int.fetchOne($0, sql: "SELECT total_changes()") }, changesBefore)
+        // GRDB's own `CREATE TABLE IF NOT EXISTS grdb_migrations` is the one statement that may look like a write.
+        let writes = statements.filter { statement in
+            let verb = statement.prefix(while: { !$0.isWhitespace }).uppercased()
+            return ["INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER"].contains(verb)
+                && !statement.hasPrefix("CREATE TABLE IF NOT EXISTS grdb_migrations")
+        }
+        XCTAssertEqual(writes, [])
+    }
+
+    func testMigrateUpToAnUnknownTargetThrowsAndWritesNothing() throws {
+        let runner = try GRDBMigrationRunner(steps: [items, note()])
+        let queue = try DatabaseQueue()
+
+        XCTAssertThrowsError(try runner.migrate(in: queue, upTo: "0009_missing")) { error in
+            XCTAssertEqual(error as? MigrationKitError, .unknownMigrationTarget("0009_missing"))
+        }
+        try queue.read { db in
+            XCTAssertFalse(try db.tableExists("items"))
+            XCTAssertFalse(try db.tableExists("grdb_migrations"))
+            XCTAssertFalse(try db.tableExists(GRDBMigrationRunner.ledgerTableName))
+        }
+    }
+
     // MARK: - Diff
 
     func testDiffOfACurrentDatabaseIsEmpty() throws {
@@ -195,7 +240,7 @@ final class MigrationLedgerTests: XCTestCase {
 
         XCTAssertEqual(
             try squashed.diff(in: queue, mainKnown: ["0002_labels"]),
-            LedgerDiff(diverged: ["0002_labels"]),
+            LedgerDiff(incomplete: ["0002_labels"]),
             "only part of what it supersedes matches, so the database ran something else"
         )
     }
@@ -225,7 +270,7 @@ final class MigrationLedgerTests: XCTestCase {
         )
     }
 
-    func testMigrateRecordsTheSquashWithoutRunningIt() throws {
+    func testMigrateNeverRunsASquashThatKeptItsNameWhereTheChainRan() throws {
         let queue = try branchArchive()
         // Run, the squash would fail: `labels` already exists.
         let squashed = try GRDBMigrationRunner(
@@ -238,9 +283,10 @@ final class MigrationLedgerTests: XCTestCase {
         XCTAssertEqual(
             try ledger(in: queue).filter { $0.identifier != "0001_items" },
             [
-                LedgerRow(identifier: "0002_labels", revision: 2, commit: "main2", branch: "main"),
+                LedgerRow(identifier: "0002_labels", revision: 1, commit: "branch", branch: "feat/labels"),
                 LedgerRow(identifier: "0003_fix_labels", revision: 1, commit: "branch", branch: "feat/labels"),
-            ]
+            ],
+            "GRDB already has 0002_labels, so its row keeps the revision that ran; the chain covers it"
         )
         XCTAssertEqual(
             try squashed.appliedMigrationIdentifiers(in: queue),
@@ -276,7 +322,7 @@ final class MigrationLedgerTests: XCTestCase {
 
         XCTAssertEqual(
             try squashed.diff(in: queue, mainKnown: ["0002_labels"]),
-            LedgerDiff(behind: ["0003_tags"], diverged: ["0002_labels"])
+            LedgerDiff(behind: ["0003_tags"], incomplete: ["0002_labels"])
         )
         XCTAssertThrowsError(try squashed.migrate(in: queue)) { error in
             XCTAssertEqual(

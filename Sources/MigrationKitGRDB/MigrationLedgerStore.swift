@@ -22,6 +22,22 @@ enum MigrationLedgerStore {
         )
     }
 
+    /// Whether `reconcile` would change anything: no ledger table, an applied identifier without
+    /// a row, or a row whose identifier is not applied.
+    static func needsReconciling(in db: Database) throws -> Bool {
+        guard try db.tableExists(table) else { return true }
+        guard try db.tableExists("grdb_migrations") else {
+            return try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM \(table))") ?? false
+        }
+        return try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT EXISTS(SELECT 1 FROM grdb_migrations WHERE identifier NOT IN (SELECT identifier FROM \(table)))
+                    OR EXISTS(SELECT 1 FROM \(table) WHERE identifier NOT IN (SELECT identifier FROM grdb_migrations))
+                """
+        ) ?? false
+    }
+
     /// Gives every applied identifier a row (revision unknown when the ledger did not see it run)
     /// and removes rows whose identifier is no longer applied.
     static func reconcile(in db: Database) throws {

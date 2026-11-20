@@ -16,15 +16,19 @@ public struct LedgerDiff: Equatable, Sendable {
     public var behind: [String]
     /// Applied identifiers the registry neither registers nor supersedes, sorted.
     public var ahead: [String]
-    /// Registered steps the database applied as a different definition, in registry order: a
-    /// recorded revision other than the registered one (never for `mainKnown` identifiers, never
-    /// for an unknown revision), or only part of the migrations the step supersedes.
+    /// Registered steps the database applied at a recorded revision other than the registered
+    /// one, in registry order. Never `mainKnown` identifiers, never an unknown (NULL) revision.
     public var diverged: [String]
+    /// Registered steps for which the database applied only part of what they supersede, in
+    /// registry order: neither applied nor appliable; `migrate` refuses with
+    /// `supersededChainIncomplete`.
+    public var incomplete: [String]
 
-    public init(behind: [String] = [], ahead: [String] = [], diverged: [String] = []) {
+    public init(behind: [String] = [], ahead: [String] = [], diverged: [String] = [], incomplete: [String] = []) {
         self.behind = behind
         self.ahead = ahead
         self.diverged = diverged
+        self.incomplete = incomplete
     }
 }
 
@@ -104,7 +108,7 @@ extension MigrationRegistry {
             case .behind:
                 diff.behind.append(step.identifier)
             case .chainIncomplete:
-                diff.diverged.append(step.identifier)
+                diff.incomplete.append(step.identifier)
             case .revisionChanged:
                 if !mainKnown.contains(step.identifier) { diff.diverged.append(step.identifier) }
             }
