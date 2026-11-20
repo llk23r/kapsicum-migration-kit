@@ -15,6 +15,9 @@ This project follows Semantic Versioning.
 - `diff(in:mainKnown:)` and `LedgerDiff` (behind, ahead, diverged, incomplete).
 - `diff(in:mainKnown:)` on a `Database` the caller holds, usable inside an open write transaction
   (a `bootstrapSchema` hook); the reader overload calls it.
+- `GRDBMigrationRunner.appliedMigrations(in:)` (a reader, or a `Database` the caller holds) and
+  `AppliedMigrations`: the applied identifiers with the revision and branch the ledger recorded for
+  each, so a host reads the ledger through MigrationKit instead of querying its tables.
 - Supersession: a step whose superseded migrations are all applied counts as applied, is applied
   by GRDB as a migration that only writes its ledger row, and its chain is neither ahead nor
   unknown to a rollback. A partly applied chain is `LedgerDiff.incomplete` and `migrate` throws

@@ -200,6 +200,42 @@ final class MigrationLedgerTests: XCTestCase {
         XCTAssertEqual(inside, expected)
     }
 
+    // MARK: - Reading what is applied
+
+    func testAppliedMigrationsReportsKnownRevisionsAndBranchesAndOnlyAppliedRows() throws {
+        let provenance = MigrationProvenance(commit: "abc123", branch: "feat/notes")
+        let queue = try DatabaseQueue()
+        try GRDBMigrationRunner(steps: [items, note(revision: 3)], provenance: provenance).migrate(in: queue)
+        try queue.write { db in
+            // Applied by a build without the ledger, then reconciled: unknown revision and branch.
+            try db.execute(sql: "INSERT INTO grdb_migrations (identifier) VALUES ('0009_old_build')")
+        }
+        try GRDBMigrationRunner(steps: [items]).reconcileLedger(in: queue)
+        try queue.write { db in
+            // A ledger row whose migration is not applied is ignored.
+            try db.execute(
+                sql: """
+                    INSERT INTO archive_migration_ledger (identifier, revision, applied_branch, applied_at)
+                    VALUES ('0010_orphan', 7, 'gone', 0)
+                    """
+            )
+        }
+        let expected = AppliedMigrations(
+            identifiers: ["0001_items", "0002_note", "0009_old_build"],
+            revisions: ["0001_items": 1, "0002_note": 3],
+            branches: ["0001_items": "feat/notes", "0002_note": "feat/notes"]
+        )
+
+        XCTAssertEqual(try GRDBMigrationRunner.appliedMigrations(in: queue), expected)
+        XCTAssertEqual(try queue.write { db in try GRDBMigrationRunner.appliedMigrations(in: db) }, expected)
+    }
+
+    func testAppliedMigrationsOfANeverMigratedDatabaseIsEmpty() throws {
+        let queue = try DatabaseQueue()
+
+        XCTAssertEqual(try GRDBMigrationRunner.appliedMigrations(in: queue), AppliedMigrations(identifiers: []))
+    }
+
     func testAnotherRevisionDivergesUnlessMainKnowsTheIdentifier() throws {
         let queue = try DatabaseQueue()
         try GRDBMigrationRunner(steps: [items, note(), tags]).migrate(in: queue)
