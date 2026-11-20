@@ -13,6 +13,8 @@ This project follows Semantic Versioning.
   transaction, and `reconcileLedger(in:)` aligns it with `grdb_migrations`, writing only when it
   drifted.
 - `diff(in:mainKnown:)` and `LedgerDiff` (behind, ahead, diverged, incomplete).
+- `diff(in:mainKnown:)` on a `Database` the caller holds, usable inside an open write transaction
+  (a `bootstrapSchema` hook); the reader overload calls it.
 - Supersession: a step whose superseded migrations are all applied counts as applied, is applied
   by GRDB as a migration that only writes its ledger row, and its chain is neither ahead nor
   unknown to a rollback. A partly applied chain is `LedgerDiff.incomplete` and `migrate` throws
