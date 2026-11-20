@@ -11,6 +11,7 @@ public enum MigrationKitError: LocalizedError, Equatable {
     case rollbackBlockedByUnknownMigrations([String])
     case rollbackPlanChanged(expected: [String], actual: [String])
     case invalidSupersession(identifier: String, reference: String)
+    case supersededChainIncomplete(identifier: String, missing: [String])
 
     public var errorDescription: String? {
         switch self {
@@ -48,6 +49,12 @@ public enum MigrationKitError: LocalizedError, Equatable {
                 Migration '\(identifier)' cannot supersede '\(reference)'. A superseded migration is not registered, \
                 is named once in the whole registry, has no '@' in its identifier, and names the step itself only at \
                 another revision.
+                """
+        case .supersededChainIncomplete(let identifier, let missing):
+            return """
+                The database applied part of what '\(identifier)' replaces, but not \
+                \(missing.joined(separator: ", ")). Nothing was migrated. Roll back what was applied with the build \
+                that applied it, or finish the chain there.
                 """
         }
     }

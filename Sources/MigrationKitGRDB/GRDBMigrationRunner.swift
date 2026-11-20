@@ -5,8 +5,13 @@ import MigrationKit
 public struct GRDBMigrationRunner: Sendable {
     public typealias Step = MigrationStep<Database>
 
+    /// The table the runner keeps its migration ledger in, next to `grdb_migrations`.
+    public static let ledgerTableName = MigrationLedgerStore.table
+
     private let registry: MigrationRegistry<Database>
     private let integration: MigrationHostIntegration<any DatabaseWriter, Database>
+    /// Recorded with every ledger row this runner writes.
+    private let provenance: MigrationProvenance
     private let log: (@Sendable (String) -> Void)?
     /// Whether the registry enforces lexicographic order: the only promise that a later build's
     /// identifiers sort after this one's, which places an unknown applied identifier. A registry
@@ -17,6 +22,7 @@ public struct GRDBMigrationRunner: Sendable {
         steps: [Step],
         enforceLexicographicOrder: Bool = true,
         integration: MigrationHostIntegration<any DatabaseWriter, Database> = .init(),
+        provenance: MigrationProvenance = MigrationProvenance(),
         log: (@Sendable (String) -> Void)? = nil
     ) throws {
         self.registry = try MigrationRegistry(
@@ -24,6 +30,7 @@ public struct GRDBMigrationRunner: Sendable {
             enforceLexicographicOrder: enforceLexicographicOrder
         )
         self.integration = integration
+        self.provenance = provenance
         self.log = log
         self.identifiersSortInOrder = enforceLexicographicOrder
     }
@@ -40,8 +47,15 @@ public struct GRDBMigrationRunner: Sendable {
         registry.rollbackCapableIdentifiers
     }
 
+    /// Applies every pending step, each in its own transaction with its ledger row.
+    ///
+    /// First, in one transaction, the ledger is reconciled and every step whose superseded
+    /// migrations are all applied is recorded as applied without running (see
+    /// `recordSupersededSteps`). A step whose superseded migrations are only partly applied
+    /// refuses the whole migration with `supersededChainIncomplete`.
     public func migrate(in writer: any DatabaseWriter) throws {
         try runBootstrapSchemaIfConfigured(in: writer)
+        try recordSupersededSteps(in: writer, through: registry.steps.count)
         let migrator = buildMigrator()
         try migrator.migrate(writer)
         try runPostMigrationChecks(in: writer)
@@ -53,6 +67,8 @@ public struct GRDBMigrationRunner: Sendable {
             throw MigrationKitError.unknownMigrationTarget(targetIdentifier)
         }
         try runBootstrapSchemaIfConfigured(in: writer)
+        let targetCount = (migrationIdentifiers.firstIndex(of: targetIdentifier) ?? 0) + 1
+        try recordSupersededSteps(in: writer, through: targetCount)
 
         let migrator = buildMigrator()
         try migrator.migrate(writer, upTo: targetIdentifier)
@@ -68,15 +84,33 @@ public struct GRDBMigrationRunner: Sendable {
         log?("✅ Migration complete up to \(targetIdentifier)")
     }
 
+    /// A step is up when the database has its effect: applied, or everything it supersedes is.
     public func migrationStatus(in writer: any DatabaseWriter) throws -> [MigrationStatus] {
-        let appliedIdentifiers = try appliedMigrationIdentifiers(in: writer)
+        let ledger = try writer.read { db in try MigrationLedgerStore.state(in: db) }
         return registry.steps.map { step in
             MigrationStatus(
                 identifier: step.identifier,
                 sourceFile: step.sourceFile,
-                state: appliedIdentifiers.contains(step.identifier) ? .up : .down
+                state: registry.standing(of: step, in: ledger).hasEffect ? .up : .down
             )
         }
+    }
+
+    /// Brings the ledger in line with `grdb_migrations`, the source of truth: an applied identifier
+    /// without a row gets one with an unknown (NULL) revision and no provenance, and a row whose
+    /// identifier is not applied is removed. Creates the ledger table if needed. `migrate` runs
+    /// this first; a host also runs it when it opens a database, before `diff`.
+    public func reconcileLedger(in writer: any DatabaseWriter) throws {
+        try writer.write { db in try MigrationLedgerStore.reconcile(in: db) }
+    }
+
+    /// How the database's applied migrations differ from this runner's registry.
+    ///
+    /// `mainKnown` names the identifiers the host treats as released: their revisions are never
+    /// compared. Reads only; an applied identifier without a ledger row counts as an unknown revision.
+    public func diff(in reader: any DatabaseReader, mainKnown: Set<String>) throws -> LedgerDiff {
+        let ledger = try reader.read { db in try MigrationLedgerStore.state(in: db) }
+        return registry.diff(ledger, mainKnown: mainKnown)
     }
 
     public func pendingMigrationIdentifiers(in writer: any DatabaseWriter) throws -> [String] {
@@ -104,18 +138,20 @@ public struct GRDBMigrationRunner: Sendable {
         guard step.rollback != nil else {
             throw MigrationKitError.rollbackNotDefined(identifier)
         }
-        try reverse(in: writer) { applied in
+        try reverse(in: writer) { ledger in
+            let applied = registry.steps.filter { registry.standing(of: $0, in: ledger).hasEffect }.map(\.identifier)
             guard applied.contains(identifier) else { return [] }
-            let latest = registry.identifiers.last(where: applied.contains) ?? identifier
+            let latest = applied.last ?? identifier
             guard latest == identifier else {
                 throw MigrationKitError.rollbackMustTargetLatestApplied(latestApplied: latest, requested: identifier)
             }
-            return try planned([step], applied: applied)
+            return try planned([step], ledger: ledger)
         }
     }
 
     /// Reverses `target`'s migrations in one transaction: every step's rollback runs and leaves
-    /// `grdb_migrations`, then the host's `didRollback` runs, or nothing changes at all.
+    /// `grdb_migrations` and the ledger, with the migrations it supersedes, then the host's
+    /// `didRollback` runs, or nothing changes at all.
     ///
     /// The steps are chosen and checked inside that transaction, before any of them runs. A step
     /// with no rollback, or a migration this build does not know applied after the ones to
@@ -128,8 +164,8 @@ public struct GRDBMigrationRunner: Sendable {
         in writer: any DatabaseWriter,
         expecting expected: [String]? = nil
     ) throws -> [String] {
-        try reverse(in: writer) { applied in
-            let steps = try plan(target, applied: applied)
+        try reverse(in: writer) { ledger in
+            let steps = try plan(target, ledger: ledger)
             if let expected, steps.map(\.identifier) != expected {
                 throw MigrationKitError.rollbackPlanChanged(expected: expected, actual: steps.map(\.identifier))
             }
@@ -149,7 +185,7 @@ public struct GRDBMigrationRunner: Sendable {
             defer { db.clearSchemaCache() }
             var report = RollbackReport(identifiers: [], removedTables: [], removedColumns: [])
             try db.inTransaction {
-                let steps = try plan(target, applied: try appliedIdentifiers(in: db))
+                let steps = try plan(target, ledger: try MigrationLedgerStore.state(in: db))
                 guard !steps.isEmpty else { return .rollback }
                 let before = try SchemaInventory(db)
                 var after = before
@@ -170,7 +206,7 @@ public struct GRDBMigrationRunner: Sendable {
     }
 
     public func appliedMigrationIdentifiers(in writer: any DatabaseWriter) throws -> Set<String> {
-        try writer.read { db in try appliedIdentifiers(in: db) }
+        try writer.read { db in try MigrationLedgerStore.state(in: db).applied }
     }
 
     public func runPostMigrationChecks(in writer: any DatabaseWriter) throws {
@@ -189,10 +225,13 @@ public struct GRDBMigrationRunner: Sendable {
         let identifier: String
         let sourceFile: String
         let rollback: @Sendable (Database) throws -> Void
+        /// What leaves `grdb_migrations` and the ledger with it: its identifier and the applied
+        /// migrations it supersedes, whose effect its rollback reverses too.
+        let forgotten: [String]
     }
 
-    private func plan(_ target: RollbackTarget, applied: Set<String>) throws -> [PlannedRollback] {
-        let appliedSteps = registry.steps.filter { applied.contains($0.identifier) }
+    private func plan(_ target: RollbackTarget, ledger: LedgerState) throws -> [PlannedRollback] {
+        let appliedSteps = registry.steps.filter { registry.standing(of: $0, in: ledger).hasEffect }
         let reversed: [Step]
         switch target {
         case .steps(let count):
@@ -207,15 +246,16 @@ public struct GRDBMigrationRunner: Sendable {
             let later = Set(registry.identifiers[(targetIndex + 1)...])
             reversed = appliedSteps.filter { later.contains($0.identifier) }.reversed()
         }
-        return try planned(reversed, applied: applied)
+        return try planned(reversed, ledger: ledger)
     }
 
     /// `steps`, newest first, once each has a rollback and no unknown migration was applied after
     /// the oldest of them. Unknown identifiers that sort before it are another branch's history,
     /// which these steps cannot depend on; without sorted identifiers, any unknown one refuses.
-    private func planned(_ steps: [Step], applied: Set<String>) throws -> [PlannedRollback] {
+    /// A superseded identifier is not unknown: the registered step that supersedes it stands for it.
+    private func planned(_ steps: [Step], ledger: LedgerState) throws -> [PlannedRollback] {
         guard let oldest = steps.last else { return [] }
-        let newer = applied.subtracting(registry.identifiers)
+        let newer = registry.unknownIdentifiers(in: ledger)
             .filter { !identifiersSortInOrder || $0 > oldest.identifier }
             .sorted()
         guard newer.isEmpty else {
@@ -225,28 +265,32 @@ public struct GRDBMigrationRunner: Sendable {
             guard let rollback = step.rollback else {
                 throw MigrationKitError.rollbackNotDefined(step.identifier)
             }
-            return PlannedRollback(identifier: step.identifier, sourceFile: step.sourceFile, rollback: rollback)
+            return PlannedRollback(
+                identifier: step.identifier,
+                sourceFile: step.sourceFile,
+                rollback: rollback,
+                forgotten: [step.identifier] + registry.supersededIdentifiers(of: step, in: ledger)
+            )
         }
     }
 
     @discardableResult
     private func reverse(
         in writer: any DatabaseWriter,
-        choosing choose: (Set<String>) throws -> [PlannedRollback]
+        choosing choose: (LedgerState) throws -> [PlannedRollback]
     ) throws -> [String] {
         let reversed: [String] = try writer.writeWithoutTransaction { db in
             var reversed: [String] = []
             do {
                 try db.inTransaction {
-                    let steps = try choose(try appliedIdentifiers(in: db))
+                    let steps = try choose(try MigrationLedgerStore.state(in: db))
                     guard !steps.isEmpty else { return .rollback }
                     for step in steps {
                         log?("↩️ Rolling back migration \(step.identifier) from \(step.sourceFile)")
                         try step.rollback(db)
-                        try db.execute(
-                            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
-                            arguments: [step.identifier]
-                        )
+                        for identifier in step.forgotten {
+                            try MigrationLedgerStore.forget(identifier, in: db)
+                        }
                     }
                     try integration.didRollback?(db)
                     reversed = steps.map(\.identifier)
@@ -269,22 +313,56 @@ public struct GRDBMigrationRunner: Sendable {
         return reversed
     }
 
-    private func appliedIdentifiers(in db: Database) throws -> Set<String> {
-        guard try db.tableExists("grdb_migrations") else { return [] }
-        return Set(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations"))
-    }
-
+    /// Each step runs in GRDB's own transaction for it (`inTransaction(.immediate)`, also under
+    /// deferred foreign key checks), which also inserts its `grdb_migrations` row; its ledger row is
+    /// written in that transaction, so the three commit together or not at all.
     private func buildMigrator() -> GRDB.DatabaseMigrator {
         var migrator = GRDB.DatabaseMigrator()
 
         for step in registry.steps {
-            migrator.registerMigration(step.identifier) { db in
+            migrator.registerMigration(step.identifier) { [provenance] db in
                 log?("🧱 Applying migration \(step.identifier) from \(step.sourceFile)")
                 try step.apply(db)
+                try MigrationLedgerStore.record(
+                    step.identifier, revision: step.revision, provenance: provenance, in: db)
             }
         }
 
         return migrator
+    }
+
+    /// Reconciles the ledger, then records each of the first `count` steps whose superseded
+    /// migrations are all applied: a `grdb_migrations` row for its identifier (already there for a
+    /// squash that kept its name) and a ledger row at its revision with this runner's provenance.
+    /// Such a step never runs; the superseded rows stay, so a build that still registers them sees
+    /// them applied, and rolling the step back removes them with it. All in one transaction; a step
+    /// whose superseded migrations are only partly applied throws and leaves the database as it was.
+    private func recordSupersededSteps(in writer: any DatabaseWriter, through count: Int) throws {
+        try writer.write { db in
+            try MigrationLedgerStore.reconcile(in: db)
+            let ledger = try MigrationLedgerStore.state(in: db)
+            for step in registry.steps.prefix(count) {
+                switch registry.standing(of: step, in: ledger) {
+                case .covered:
+                    log?("⏭️ Recording \(step.identifier) as applied: everything it supersedes is applied")
+                    try db.execute(
+                        sql: "CREATE TABLE IF NOT EXISTS grdb_migrations (identifier TEXT NOT NULL PRIMARY KEY)")
+                    try db.execute(
+                        sql: "INSERT OR IGNORE INTO grdb_migrations (identifier) VALUES (?)",
+                        arguments: [step.identifier]
+                    )
+                    try MigrationLedgerStore.record(
+                        step.identifier, revision: step.revision, provenance: provenance, in: db)
+                case .chainIncomplete(let missing):
+                    throw MigrationKitError.supersededChainIncomplete(
+                        identifier: step.identifier,
+                        missing: missing.map(\.description)
+                    )
+                case .applied, .revisionChanged, .behind:
+                    break
+                }
+            }
+        }
     }
 
     private func runBootstrapSchemaIfConfigured(in writer: any DatabaseWriter) throws {
