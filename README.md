@@ -158,9 +158,10 @@ CREATE TABLE archive_migration_ledger (
   (`inTransaction(.immediate)`, also under deferred foreign key checks), with its `revision` and
   the `MigrationProvenance` the host passed the runner. A step that throws leaves no row.
 - **Deleted with each rollback**, in the rollback's own transaction.
-- **Reconciled** by `reconcileLedger(in:)`, which `migrate` also runs first: an applied identifier
+- **Reconciled** by `reconcileLedger(in:)`, which `migrate` also runs: an applied identifier
   without a row gets one with a NULL revision; a row whose identifier is not applied is removed.
-  `grdb_migrations` stays the source of truth.
+  `grdb_migrations` stays the source of truth. The drift is measured in a read, and a write
+  transaction opens only when there is some, so migrating an up-to-date database writes nothing.
 
 ```swift
 let runner = try GRDBMigrationRunner(
@@ -171,7 +172,8 @@ try runner.reconcileLedger(in: writer)   // when the database opens
 let diff = try runner.diff(in: writer, mainKnown: releasedIdentifiers)
 // diff.behind:   registered steps not applied
 // diff.ahead:    applied identifiers this build neither registers nor supersedes
-// diff.diverged: steps applied as another definition (see below)
+// diff.diverged:   steps applied at another revision (see below)
+// diff.incomplete: steps whose superseded chain is only partly applied (see below)
 ```
 
 ### Revision
@@ -192,16 +194,17 @@ an unknown one). When **every** reference is applied:
   and a rollback can reverse it;
 - the superseded identifiers are neither `ahead` nor unknown to `rollbackBlockedByUnknownMigrations`:
   the registered step stands for them;
-- `migrate` does **not** run it. Before any step runs, in one transaction, it records the step: a
-  `grdb_migrations` row for its identifier (already there when the squash kept its name) and a
-  ledger row at its revision with the current provenance. The superseded rows stay, so a build
-  that still registers them sees them applied;
+- `migrate` does **not** run it: it registers the step with GRDB as a migration that only writes
+  its ledger row (its revision, the current provenance), so GRDB records its identifier in
+  `grdb_migrations`, atomically, in its own transaction. A squash that kept its name is already in
+  `grdb_migrations`, so GRDB skips it and its row keeps the revision that ran; the chain still
+  covers it. The superseded rows stay, so a build that still registers them sees them applied;
 - rolling the step back reverses its schema and removes its rows **and** the superseded ones, so
   the next `migrate` runs it as on a fresh database.
 
 When only **some** references are applied, the database ran part of a chain the step cannot
-finish: `diff` lists the step as diverged (whatever `mainKnown` says) and `migrate` throws
-`supersededChainIncomplete` before changing anything. Roll the chain back with the build that
+finish: `diff` lists the step under `incomplete` (whatever `mainKnown` says) and `migrate` throws
+`supersededChainIncomplete`, decided from a read, before writing anything. Roll the chain back with the build that
 applied it.
 
 The registry refuses a reference that names a registered step, a reference named twice, and a step
@@ -226,8 +229,8 @@ MigrationStep(
 )
 ```
 
-Databases that ran the chain count as current and have the step recorded at revision 2; fresh
-databases run the single step. Keep the chain's old definitions in your tests and prove the squash
+Databases that ran the chain count as current; fresh databases run the single step and record it
+at revision 2. Keep the chain's old definitions in your tests and prove the squash
 matches them:
 
 ```swift
@@ -242,9 +245,10 @@ XCTAssertTrue(report.isEquivalent, report.description)
 
 `compare` applies each side to its own in-memory database and compares tables, columns (type,
 `NOT NULL`, default, primary key, hidden), foreign keys, indexes (columns, order, collation,
-uniqueness, partial `WHERE`), triggers and views (normalized SQL), and with a fixture, row counts.
-It does not compare column order or `CHECK` constraints. A squash that does not match fails the
-test, never a database.
+uniqueness, partial `WHERE`), each table's `CREATE TABLE` text (normalized, with its column and
+constraint list sorted: this is where `CHECK` constraints live), triggers and views (normalized
+SQL), and with a fixture, row counts. Column order is not compared. A squash that does not match
+fails the test, never a database.
 
 ## API Overview
 
@@ -255,7 +259,7 @@ Core (`MigrationKit`):
 | `MigrationStep<Database>` | Holds an identifier, source file, revision, superseded migrations, apply closure, and optional rollback closure |
 | `MigrationReference` | An identifier with an optional revision (`"0091_x"`, `"0091_x@1"`) |
 | `MigrationProvenance` | The commit and branch recorded with each ledger row |
-| `LedgerDiff` | Steps behind, identifiers ahead, steps diverged |
+| `LedgerDiff` | Steps behind, identifiers ahead, steps diverged, steps with an incomplete superseded chain |
 | `MigrationRegistry<Database>` | Validates ordering and uniqueness; exposes the manifest and rollback-capable identifiers |
 | `MigrationHostIntegration` | Optional hooks for schema bootstrap, integrity checks, post-migration verification, and bookkeeping inside a rollback's transaction |
 | `RollbackTarget` / `RollbackReport` | Which applied steps a rollback reverses; the tables and columns it takes away, with their counts |

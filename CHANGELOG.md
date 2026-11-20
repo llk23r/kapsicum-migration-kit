@@ -10,13 +10,16 @@ This project follows Semantic Versioning.
   tell apart (`MigrationKitError.invalidSupersession`).
 - The migration ledger, `archive_migration_ledger`: each step writes its row (revision and the
   runner's `MigrationProvenance`) in its own transaction, a rollback deletes its rows in its
-  transaction, and `reconcileLedger(in:)` aligns it with `grdb_migrations`.
-- `diff(in:mainKnown:)` and `LedgerDiff` (behind, ahead, diverged).
-- Supersession: a step whose superseded migrations are all applied counts as applied, is recorded
-  by `migrate` without running, and its chain is neither ahead nor unknown to a rollback.
-  A partly applied chain throws `MigrationKitError.supersededChainIncomplete`.
+  transaction, and `reconcileLedger(in:)` aligns it with `grdb_migrations`, writing only when it
+  drifted.
+- `diff(in:mainKnown:)` and `LedgerDiff` (behind, ahead, diverged, incomplete).
+- Supersession: a step whose superseded migrations are all applied counts as applied, is applied
+  by GRDB as a migration that only writes its ledger row, and its chain is neither ahead nor
+  unknown to a rollback. A partly applied chain is `LedgerDiff.incomplete` and `migrate` throws
+  `MigrationKitError.supersededChainIncomplete` before writing anything.
 - `SquashEquivalence.compare(base:chain:squashed:fixture:)`: whether a squashed step leaves the same
-  schema (and fixture row counts) as the chain it supersedes.
+  schema (columns, keys, indexes, triggers, views, `CREATE TABLE` text including `CHECK`
+  constraints) and fixture row counts as the chain it supersedes.
 - `rollback(_:in:)` with `RollbackTarget.steps(_:)` and `.to(_:)`: every step reverses in one transaction.
 - `rollbackReport(_:in:)`: the tables and columns a rollback takes away, with their row and value
   counts, measured in a savepoint that is undone.
