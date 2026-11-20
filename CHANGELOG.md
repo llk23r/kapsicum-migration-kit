@@ -5,6 +5,21 @@ This project follows Semantic Versioning.
 
 ## [Unreleased]
 ### Added
+- `MigrationStep.revision` (default 1) and `MigrationStep.supersedes`, a list of
+  `MigrationReference` (`"0091_x"` or `"0091_x@1"`). The registry refuses a supersession it cannot
+  tell apart (`MigrationKitError.invalidSupersession`).
+- The migration ledger, `archive_migration_ledger`: each step writes its row (revision and the
+  runner's `MigrationProvenance`) in its own transaction, a rollback deletes its rows in its
+  transaction, and `reconcileLedger(in:)` aligns it with `grdb_migrations`, writing only when it
+  drifted.
+- `diff(in:mainKnown:)` and `LedgerDiff` (behind, ahead, diverged, incomplete).
+- Supersession: a step whose superseded migrations are all applied counts as applied, is applied
+  by GRDB as a migration that only writes its ledger row, and its chain is neither ahead nor
+  unknown to a rollback. A partly applied chain is `LedgerDiff.incomplete` and `migrate` throws
+  `MigrationKitError.supersededChainIncomplete` before writing anything.
+- `SquashEquivalence.compare(base:chain:squashed:fixture:)`: whether a squashed step leaves the same
+  schema (columns, keys, indexes, triggers, views, `CREATE TABLE` text including `CHECK`
+  constraints) and fixture row counts as the chain it supersedes.
 - `rollback(_:in:)` with `RollbackTarget.steps(_:)` and `.to(_:)`: every step reverses in one transaction.
 - `rollbackReport(_:in:)`: the tables and columns a rollback takes away, with their row and value
   counts, measured in a savepoint that is undone.
@@ -20,6 +35,10 @@ This project follows Semantic Versioning.
   identifiers it reported, so a rollback another writer changed since is refused, not run.
 
 ### Changed
+- `migrate` creates `archive_migration_ledger`, so it appears in schema snapshots.
+- `migrationStatus`, `pendingMigrationIdentifiers` and rollback planning count a step whose
+  superseded migrations are all applied as applied, and a step whose chain is only partly
+  applied as pending.
 - `rollbackLastMigration`, `rollbackMigrations(in:steps:)` and `rollbackMigration(identifier:in:)`
   run through the same transaction: a failing step now leaves every step applied, instead of the
   ones before it reversed. Their steps are chosen and checked inside it, before any runs.

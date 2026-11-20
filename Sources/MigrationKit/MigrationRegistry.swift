@@ -21,7 +21,32 @@ public struct MigrationRegistry<Database>: Sendable {
             }
         }
 
+        try Self.validateSupersession(of: steps)
         self.steps = steps
+    }
+
+    /// Each superseded identifier is named once in the registry and is not itself registered,
+    /// except a step naming its own identifier at another revision (a squash that kept its name).
+    private static func validateSupersession(of steps: [MigrationStep<Database>]) throws {
+        let registered = Set(steps.map(\.identifier))
+        var named: Set<String> = []
+        for step in steps {
+            for reference in step.supersedes {
+                let isSelf = reference.identifier == step.identifier
+                let valid =
+                    !reference.identifier.contains("@")
+                    && named.insert(reference.identifier).inserted
+                    && (isSelf
+                        ? reference.revision.map { $0 != step.revision } ?? false
+                        : !registered.contains(reference.identifier))
+                guard valid else {
+                    throw MigrationKitError.invalidSupersession(
+                        identifier: step.identifier,
+                        reference: reference.description
+                    )
+                }
+            }
+        }
     }
 
     public var identifiers: [String] {

@@ -149,7 +149,7 @@ When you call `runner.migrate(in: writer)`, three things happen in sequence:
 
 1. **Build a GRDB migrator.** The runner iterates over the registry's steps and registers each one with GRDB's own `DatabaseMigrator`. GRDB tracks which identifiers have already been applied in an internal table called `grdb_migrations`. When the migrator runs, it skips identifiers already present in that table and applies the rest.
 
-2. **Apply pending steps.** For each unapplied step, the `apply` closure runs inside a database transaction. If it throws, the transaction rolls back and the error propagates. If it succeeds, GRDB records the identifier in `grdb_migrations`.
+2. **Apply pending steps.** For each unapplied step, the `apply` closure runs inside a database transaction. If it throws, the transaction rolls back and the error propagates. If it succeeds, GRDB records the identifier in `grdb_migrations`, and the runner writes the step's row in the migration ledger (its revision, and the commit and branch of the build) in the same transaction. Before any step runs, the runner reconciles the ledger with `grdb_migrations` if it drifted; a step whose superseded migrations are all applied is applied as a migration that only writes its ledger row. See [Ledger, revisions and squash on merge](../README.md#ledger-revisions-and-squash-on-merge).
 
 3. **Verify.** After all steps complete, the runner runs post-migration checks. More on this in Q5.
 
@@ -189,8 +189,8 @@ When you call `runner.rollback(.steps(2), in: writer)` (or `.to("0001_...")`, or
 
 1. Reads `grdb_migrations` to find which identifiers are applied.
 2. Chooses the steps to reverse, newest first, from the registry's order.
-3. Refuses, before running any of them, if one has no `rollback` closure (`rollbackNotDefined`), or if an identifier this registry does not know was applied after the oldest of them (`rollbackBlockedByUnknownMigrations`): a newer build's migration may depend on what they would remove. Unknown identifiers that sort earlier are another branch's history and do not refuse.
-4. Runs each rollback closure and deletes its identifier from `grdb_migrations`.
+3. Refuses, before running any of them, if one has no `rollback` closure (`rollbackNotDefined`), or if an identifier this registry does not know was applied after the oldest of them (`rollbackBlockedByUnknownMigrations`): a newer build's migration may depend on what they would remove. Unknown identifiers that sort earlier are another branch's history and do not refuse, and an identifier a registered step supersedes is not unknown.
+4. Runs each rollback closure and deletes its identifier, and those of the applied migrations it supersedes, from `grdb_migrations` and the ledger.
 5. Runs the host's `didRollback`, if any.
 
 Then it commits, and runs verification once. If anything throws, SQLite undoes the whole transaction: every step stays applied. GRDB's schema cache only learns of schema changes as they run, never of a `ROLLBACK`, so the runner clears it on failure.
